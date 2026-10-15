@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const target = 'root@47.94.42.14';
-const origin = 'https://47.94.42.14';
+const origin = 'https://dianque.me';
 const sshOptions = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10'];
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { cwd: root, stdio: 'inherit', encoding: 'utf8', ...options });
