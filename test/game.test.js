@@ -74,6 +74,41 @@ test('骰子默认关闭，开启后开局、和牌和流局自动投掷，其�
   for (const invalid of [{ autoDice: 'true' }, { tsumoConfirm: 1 }]) assert.throws(() => room(4, invalid), /布尔/);
 });
 
+for (const count of [3, 4]) test(`${count} 人牌桌开关仅房主可改，不改变局况，确认流程即时生效，骰子从下一局生效`, () => {
+  const r = room(count), before = structuredClone(r.history);
+  const settings = { type: 'table-settings', tsumoConfirm: true, autoDice: true, requestId: 'table-settings-once' };
+  assert.throws(() => act(r, 1, settings), /房主/);
+  for (const invalid of [{ tsumoConfirm: 1 }, { autoDice: 'false' }, { autoDice: undefined }]) {
+    assert.throws(() => act(r, 0, { ...settings, ...invalid }), /布尔/);
+  }
+  const revision = r.revision;
+  act(r, 0, settings);
+  assert.equal(act(r, 0, settings), false);
+  assert.equal(r.revision, revision + 1);
+  assert.deepEqual(r.history, before);
+  assert.equal(stateOf(r).dice, undefined);
+  assert.throws(() => act(r, 0, { ...settings, requestId: 'stale-settings', revision }), /更新/);
+  const transfers = r.players.filter((p) => p.seat !== 1).map((p) => ({ from: p.seat, to: 1, amount: 1000 }));
+  act(r, 1, { type: 'propose', mode: 'tsumo', transfers });
+  assert.throws(() => act(r, 0, { ...settings, requestId: 'pending-settings', tsumoConfirm: false }), /结算/);
+  assert.throws(() => receive(r, 1), /付款/);
+  for (const { from } of transfers) act(r, from, { type: 'approve', pendingId: r.pending.id });
+  receive(r, 1);
+  const rolled = structuredClone(stateOf(r).dice);
+  assert.ok(rolled.values.every((n) => Number.isInteger(n) && n >= 1 && n <= 6));
+  act(r, 0, { type: 'table-settings', tsumoConfirm: false, autoDice: false });
+  assert.deepEqual(stateOf(r).dice, rolled);
+  act(r, 1, { type: 'propose', mode: 'tsumo', transfers }); receive(r, 1);
+  assert.equal(stateOf(r).dice, undefined);
+  act(r, 0, { type: 'draw', tenpai: false });
+  assert.throws(() => act(r, 0, { ...settings, requestId: 'draw-settings' }), /结算/);
+  for (let i = 1; i < count; i++) act(r, i, { type: 'draw', tenpai: false });
+  act(r, 0, { type: 'end' });
+  assert.throws(() => act(r, 0, { ...settings, requestId: 'settling-settings' }), /对局中/);
+  act(r, 0, { type: 'confirm-end' });
+  assert.throws(() => act(r, 0, { ...settings, requestId: 'ended-settings' }), /对局中/);
+});
+
 for (const count of [3, 4]) test(`${count} 人结算先预览供托，房主确认后给第一名且不可撤销`, () => {
   const r = room(count);
   act(r, 0, { type: 'riichi' });

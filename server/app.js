@@ -172,6 +172,7 @@ export class Dianque {
     const updated = this.transaction(() => {
       const target = this.one('SELECT * FROM users WHERE id=?', route[1]);
       if (!target) fail(404, '账号不存在');
+      if (password) check(!user.active_room && !target.active_room, '对局中禁止修改密码，请结束并确认结算后再修改');
       this.limit(`admin:${user.id}`, 30, 3600000, '账号修改次数过多');
       if (renamed) {
         if (this.one('SELECT id FROM users WHERE nickname_key=? AND id<>?', renamed.key, target.id)) fail(409, '昵称已被使用');
@@ -311,6 +312,7 @@ export class Dianque {
       this.limit(`request:${user.id}`, 120);
       if (path.startsWith('/api/admin/')) return this.admin(request, url, body, user);
       if (path === '/api/password' && method === 'POST') {
+        check(!user.active_room, '对局中禁止修改密码，请结束并确认结算后再修改');
         check(Object.keys(body).length === 2 && Object.keys(body).every((key) => ['currentPassword', 'newPassword'].includes(key)), '请填写原密码和新密码');
         const currentPassword = passwordValue(body.currentPassword), newPassword = passwordValue(body.newPassword);
         check(currentPassword !== newPassword, '新密码不能与原密码相同');

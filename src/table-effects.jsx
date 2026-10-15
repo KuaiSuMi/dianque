@@ -4,8 +4,9 @@ import { api } from './api';
 export function Dice({ dice }) {
   if (!dice) return null;
   const pips = [[4], [0, 8], [0, 4, 8], [0, 2, 6, 8], [0, 2, 4, 6, 8], [0, 2, 3, 5, 6, 8]];
+  const rotations = ['rotateX(0deg)', 'rotateX(-90deg)', 'rotateY(-90deg)', 'rotateY(90deg)', 'rotateX(90deg)', 'rotateY(180deg)'];
   return <div className="dice-result" role="status" aria-label={`掷骰结果 ${dice.values.join('、')}，合计 ${dice.values[0] + dice.values[1]} 点`}>
-    <span>本局骰子</span><div className="dice-pair" key={dice.id} aria-hidden="true">{dice.values.map((value, index) => <div className={`die die-${index}`} key={index}>{Array.from({ length: 9 }, (_, pip) => <i key={pip} className={pips[value - 1].includes(pip) ? 'pip' : ''} />)}</div>)}</div><strong>{dice.values[0] + dice.values[1]} 点</strong>
+    <span>本局骰子</span><div className="dice-pair" key={dice.id} aria-hidden="true">{dice.values.map((value, index) => <div className={`die-view die-${index}`} key={index}><div className="die-tumble"><div className="die" style={{ transform: rotations[value - 1] }}>{pips.map((face, side) => <div className={`die-face die-face-${side + 1}`} key={side}>{Array.from({ length: 9 }, (_, pip) => <i key={pip} className={face.includes(pip) ? 'pip' : ''} />)}</div>)}</div></div></div>)}</div><strong>{dice.values[0] + dice.values[1]} 点</strong>
   </div>;
 }
 

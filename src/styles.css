@@ -475,11 +475,25 @@ input:focus, select:focus {border-color:var(--mint);
 .admin-fields input[type="file"] { max-width:100%; padding:12px; font-size:13px; }
 .dice-result { display:flex; align-items:center; justify-content:center; gap:16px; margin:10px 0 18px; color:var(--muted); font-size:12px; }
 .dice-result strong { font-size:15px; color:var(--text); }
-.dice-pair { display:flex; gap:10px; }
-.die { display:grid; grid-template-columns:repeat(3, 1fr); gap:4px; width:38px; height:38px; padding:7px; border-radius:8px; background:var(--surface); border:1px solid var(--line); box-shadow:0 3px 0 var(--line); animation:dice-roll 300ms var(--ease-out) both; }
-.die-1 { animation-delay:50ms; }
-.die i { border-radius:50%; }
+.dice-pair { display:flex; gap:24px; padding:14px 8px; }
+.die-view { width:44px; height:44px; perspective:400px; }
+.die-tumble, .die { position:relative; width:100%; height:100%; transform-style:preserve-3d; }
+.die-tumble { --roll-x:702deg; --roll-y:696deg; transform:rotateX(-18deg) rotateY(-24deg); animation:dice-roll 2s ease-out both; }
+.die-1 .die-tumble { --roll-x:-738deg; --roll-y:-744deg; }
+.die-face { position:absolute; inset:0; display:grid; grid-template-columns:repeat(3, 1fr); grid-template-rows:repeat(3, 1fr); gap:4px; padding:8px; border-radius:6px; background:var(--surface); border:1px solid var(--line); box-shadow:inset 0 0 8px var(--line); backface-visibility:hidden; }
+.die-face-1 { transform:translateZ(22px); }
+.die-face-2 { transform:rotateX(90deg) translateZ(22px); }
+.die-face-3 { transform:rotateY(90deg) translateZ(22px); }
+.die-face-4 { transform:rotateY(-90deg) translateZ(22px); }
+.die-face-5 { transform:rotateX(-90deg) translateZ(22px); }
+.die-face-6 { transform:rotateY(180deg) translateZ(22px); }
+.die-face i { border-radius:50%; }
 .die .pip { background:var(--mint); }
-@keyframes dice-roll { from { opacity:.3; transform:translateY(-12px) rotate(-150deg); } to { opacity:1; transform:translateY(0) rotate(0); } }
-@media (prefers-reduced-motion:reduce) { .die { animation:dice-fade 150ms ease both; } }
+@keyframes dice-roll {
+  0% { transform:translateY(-18px) rotateX(var(--roll-x)) rotateY(var(--roll-y)) rotateZ(-24deg); }
+  70% { transform:translateY(-6px) rotateX(52deg) rotateY(46deg) rotateZ(12deg); }
+  85% { transform:translateY(0) rotateX(-26deg) rotateY(-32deg) rotateZ(-5deg); }
+  100% { transform:translateY(0) rotateX(-18deg) rotateY(-24deg) rotateZ(0deg); }
+}
+@media (prefers-reduced-motion:reduce) { .die-tumble { animation:dice-fade 150ms ease both; } }
 @keyframes dice-fade { from { opacity:.4; } to { opacity:1; } }

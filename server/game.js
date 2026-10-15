@@ -67,8 +67,9 @@ export function leaveRoom(room, actorId) {
 }
 
 function commit(room, state, entry) {
-  if (room.config.autoDice && (entry.type === 'start' || entry.type === 'win' || entry.type === 'draw')) {
-    state.dice = { id: randomUUID(), values: [randomInt(1, 7), randomInt(1, 7)] };
+  if (['start', 'win', 'draw'].includes(entry.type)) {
+    if (room.config.autoDice) state.dice = { id: randomUUID(), values: [randomInt(1, 7), randomInt(1, 7)] };
+    else delete state.dice;
   }
   room.history = room.history.slice(0, room.cursor + 1);
   room.history.push({ state, entry: { id: randomUUID(), at: new Date().toISOString(), ...entry } });
@@ -144,6 +145,13 @@ export function applyAction(room, actorId, action) {
     room.players.sort((a, b) => a.seat - b.seat);
     room.history = [{ state: initialState(room.config, action.playerCount), entry: null }];
     room.cursor = 0;
+  } else if (action.type === 'table-settings') {
+    check(player.id === room.hostId, '只有房主可以修改牌桌设置');
+    check(state.status === 'playing', '请在对局中修改牌桌设置');
+    check(!room.pending && Object.keys(room.drawVotes).length === 0, '请先完成或取消当前结算，再修改牌桌设置');
+    check(typeof action.tsumoConfirm === 'boolean' && typeof action.autoDice === 'boolean', '确认和骰子开关须为布尔值');
+    room.config.tsumoConfirm = action.tsumoConfirm;
+    room.config.autoDice = action.autoDice;
   } else if (action.type === 'start') {
     check(player.id === room.hostId, '只有房主可以开局');
     check(['waiting', 'ended'].includes(state.status) && room.players.length === count, `${count === 3 ? '三' : '四'}人入座后才能开局`);

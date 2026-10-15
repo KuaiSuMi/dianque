@@ -589,6 +589,43 @@ test('认证请求仍按 IP 限流，注册和登录共享额度，到期后恢�
   } finally { await mf.close(); }
 });
 
+test('对局及结算期间禁止本人和管理员改密码；牌桌开关广播并保存', async () => {
+  const mf = await runtime();
+  let ws;
+  try {
+    const admin = await administrator(mf);
+    const host = await register(mf, '密码房主'), guest = await register(mf, '密码玩家'), third = await register(mf, '密码第三家');
+    let room = (await request(mf, '/rooms', { cookie: host.cookie, body: { playerCount: 3 } })).body;
+    for (const cookie of [guest.cookie, third.cookie]) room = (await request(mf, `/rooms/${room.code}/join`, { cookie, method: 'POST' })).body;
+    async function act(type, fields = {}) {
+      const result = await request(mf, `/rooms/${room.code}/action`, { cookie: host.cookie, body: { type, revision: room.revision, roundId: room.state.roundId, requestId: randomUUID(), ...fields } });
+      assert.equal(result.status, 200, JSON.stringify(result.body)); room = result.body;
+    }
+    await act('start');
+    ws = await socket(mf, room.code, guest.cookie);
+    const update = message(ws, (r) => r.config?.autoDice && r.config?.tsumoConfirm);
+    const before = structuredClone(room.state);
+    await act('table-settings', { autoDice: true, tsumoConfirm: true });
+    assert.deepEqual((await update).config, room.config); assert.deepEqual(room.state, before);
+    assert.deepEqual((await request(mf, `/rooms/${room.code}`, { cookie: guest.cookie })).body.config, room.config);
+    const id = guest.body.user.id;
+    const original = mf.app.one('SELECT salt,password_hash,nickname FROM users WHERE id=?', id);
+    for (const phase of ['playing', 'settling']) {
+      if (phase === 'settling') await act('end');
+      const self = await request(mf, '/password', { cookie: guest.cookie, body: { currentPassword: password, newPassword: 'new-password-456' } });
+      assert.equal(self.status, 400); assert.match(self.body.error, /对局中禁止修改密码/);
+      const reset = await request(mf, `/admin/users/${id}`, { cookie: admin.cookie, body: { nickname: '不应改名', password: 'new-password-456' } });
+      assert.equal(reset.status, 400); assert.match(reset.body.error, /对局中禁止修改密码/);
+      assert.deepEqual(mf.app.one('SELECT salt,password_hash,nickname FROM users WHERE id=?', id), original);
+      assert.equal((await request(mf, '/session', { cookie: guest.cookie })).body.user.id, id);
+      assert.equal(ws.readyState, WebSocket.OPEN);
+    }
+    await act('confirm-end');
+    assert.equal((await request(mf, '/password', { cookie: guest.cookie, body: { currentPassword: password, newPassword: 'new-password-456' } })).status, 200);
+    assert.equal((await request(mf, `/admin/users/${host.body.user.id}`, { cookie: admin.cookie, body: { password: 'reset-password-789' } })).status, 200);
+  } finally { ws?.close(); await mf.close(); }
+});
+
 test('Node 服务：四端同步、并发收款、账号锁定、结算不可撤销与重启保存', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dianque-server-'));
   let mf = await runtime(dir);

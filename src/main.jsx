@@ -68,6 +68,13 @@ function Sheet({ title, children, close, wide = false, top = false }) {
   </motion.dialog>;
 }
 
+function RuleSwitches({ count, tsumoConfirm, setTsumoConfirm, autoDice, setAutoDice, disabled = false, playing = false }) {
+  return <>
+    <div className="settings-row"><span>自摸{count === 3 ? '两' : '三'}家确认<small>关闭时仅自摸家确认结算</small></span><Toggle label={`自摸${count === 3 ? '两' : '三'}家确认`} checked={tsumoConfirm} disabled={disabled} onChange={setTsumoConfirm} /></div>
+    <div className="settings-row"><span>自动掷骰子<small>{playing ? '从下一局生效，每局开始投掷两颗' : '每局开始时投掷两颗，全桌同步'}</small></span><Toggle label="自动掷骰子" checked={autoDice} disabled={disabled} onChange={setAutoDice} /></div>
+  </>;
+}
+
 function RoomRulesFields({ points, setPoints, length, setLength, count, setCount, tsumoConfirm, setTsumoConfirm, autoDice, setAutoDice, seated = 0 }) {
   return <>
     <fieldset className="format-field"><legend>对战形式</legend><Segmented label="对战形式" value={length} onChange={setLength} options={[['south', '南风场'], ['east', '东风场']]} /></fieldset>
@@ -75,31 +82,33 @@ function RoomRulesFields({ points, setPoints, length, setLength, count, setCount
     {seated > 3 && <p className="field-help">已有四人入座，不能改为三人模式。</p>}
     <label>起始点数<input type="number" inputMode="numeric" min="1000" max="1000000" step="100" required value={points} onChange={(e) => setPoints(e.target.value)} /></label>
     {count === 3 && <p className="field-help">三人自摸损 · 流局罚符共 2,000 点</p>}
-    <div className="settings-row"><span>自摸{count === 3 ? '两' : '三'}家确认<small>关闭时仅自摸家确认结算</small></span><Toggle label={`自摸${count === 3 ? '两' : '三'}家确认`} checked={tsumoConfirm} onChange={setTsumoConfirm} /></div>
-    <div className="settings-row"><span>自动掷骰子<small>每局开始时投掷两颗，全桌同步</small></span><Toggle label="自动掷骰子" checked={autoDice} onChange={setAutoDice} /></div>
+    <RuleSwitches {...{ count, tsumoConfirm, setTsumoConfirm, autoDice, setAutoDice }} />
   </>;
 }
 
-function HomeAnnouncements({ adminOpen = false }) {
+function Announcements({ adminOpen = false }) {
   const [items, setItems] = useState([]);
   const [show, setShow] = useState(false);
+  const read = useRef('');
   useEffect(() => {
     if (adminOpen) return;
     const abort = new AbortController();
+    try { read.current = sessionStorage.getItem('announcements-read') || read.current; } catch { /* 禁用存储时保留本页已读状态。 */ }
     function load() {
       api('/announcements', { signal: abort.signal }).then((next) => {
         setItems(next);
-        let read = '';
-        try { read = sessionStorage.getItem('announcements-read') || ''; } catch { /* 禁用存储时仍展示公告。 */ }
-        if (next.length && next.map((item) => `${item.id}:${item.revision}`).join(',') !== read) setShow(true);
+        if (next.length && next.map((item) => `${item.id}:${item.revision}`).join(',') !== read.current) setShow(true);
       }).catch(() => {});
     }
-    load(); window.addEventListener('focus', load);
-    return () => { abort.abort(); window.removeEventListener('focus', load); };
+    const refresh = () => { if (document.visibilityState === 'visible') load(); };
+    const timer = setInterval(refresh, 30000);
+    load(); window.addEventListener('focus', refresh); document.addEventListener('visibilitychange', refresh);
+    return () => { abort.abort(); clearInterval(timer); window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); };
   }, [adminOpen]);
   function close() {
     setShow(false);
-    try { sessionStorage.setItem('announcements-read', items.map((item) => `${item.id}:${item.revision}`).join(',')); } catch { /* 关闭状态仍保留到本次离开首页。 */ }
+    read.current = items.map((item) => `${item.id}:${item.revision}`).join(',');
+    try { sessionStorage.setItem('announcements-read', read.current); } catch { /* 禁用存储时保留本页已读状态。 */ }
   }
   if (!items.length) return null;
   return <><button className="announcement-banner" onClick={() => setShow(true)}><Info size={17} /><span>{items[0].title}</span><ChevronRight size={17} /></button><AnimatePresence>{show && !adminOpen && <Sheet title="公告" top close={close}>{items.map((item) => <article className="announcement" key={item.id}><h3>{item.title}</h3><time>{new Date(item.updated_at).toLocaleDateString('zh-CN')}</time><p>{item.content}</p></article>)}<Button className="primary full" onClick={close}>知道了</Button></Sheet>}</AnimatePresence></>;
@@ -130,7 +139,7 @@ function Lobby({ user, onEnter, notify, openAccount, openAdmin, adminOpen }) {
   return <main className="lobby page">
     <header className="app-header"><Logo subtitle /><button className="text-button" onClick={openAccount}><History size={17} />{user.nickname} · 我的对局</button></header>
     <AdminEntry open={openAdmin} />
-    <HomeAnnouncements adminOpen={adminOpen} />
+    <Announcements adminOpen={adminOpen} />
     <div className="lobby-layout">
       <section className="entry-panel"><Segmented className="entry-tabs" label="进入牌桌方式" value={tab} onChange={setTab} options={[['create', '创建牌桌'], ['join', '加入牌桌']]} />
         <motion.form key={tab} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.18 }} onSubmit={submit}>
@@ -365,7 +374,7 @@ function SettlementScoresSheet({ room, act, busy, close }) {
   </form></Sheet>;
 }
 
-function Table({ room, me, act, busy, connected, notify, home, openAdmin, changePassword }) {
+function Table({ room, me, act, busy, connected, notify, home, openAdmin, adminOpen, changePassword }) {
   const voice = useRiichiVoice(room);
   const [sheet, setSheet] = useState(null);
   const [target, setTarget] = useState(null);
@@ -399,6 +408,7 @@ function Table({ room, me, act, busy, connected, notify, home, openAdmin, change
   }
   return <main className="table-page page"><header className="app-header"><Logo /><div className="header-room">{['waiting', 'ended'].includes(current.status) && <button className="text-button" disabled={busy} onClick={home} aria-label="退出房间" title="退出房间"><Home size={17} /></button>}<button className="text-button" onClick={() => setSheet('share')}>房间 {room.code}<Share2 size={15} /></button><span className={`network ${connected ? 'connected' : ''}`}>{connected ? <Wifi size={14} /> : <WifiOff size={14} />}<span>{connected ? '已同步' : '重连中'}</span></span></div></header>
     {['waiting', 'ended'].includes(current.status) && <AdminEntry open={openAdmin} />}
+    <Announcements adminOpen={adminOpen} />
     {!connected && <div role="status" className="offline-banner">连接中断，重连前暂停操作。</div>}
     {current.status === 'settling' ? <Settlement room={room} me={me} act={act} busy={locked} edit={() => setSheet('settlement-scores')} records={() => setSheet('records')} undo={() => setSheet('undo')} redo={() => setSheet('redo')} /> : current.status !== 'playing' ? <WaitingRoom room={room} me={me} act={act} busy={locked} share={() => setSheet('share')} records={() => setSheet('records')} configure={() => setSheet('configure')} changePassword={changePassword} /> : <>
       <div className="table-toolbar"><div><span>{count === 3 ? '三人' : '四人'}{room.config.length === 'south' ? '南' : '东'}</span>{me.id === room.hostId && <button className="text-button end-game-button" disabled={locked || pending} onClick={() => act({ type: 'end' })}>结束对战</button>}</div><div className="history-buttons as-glass as-glass-group" data-adapt="off" data-lens="off"><button className="as-item" aria-label="撤销上一步" title="撤销上一步" disabled={locked || !room.canUndo || pending} onClick={() => setSheet('undo')}><Undo2 size={18} /><span>撤销</span></button><button className="as-item" aria-label="重做上一步" title="重做上一步" disabled={locked || !room.canRedo || pending} onClick={() => setSheet('redo')}><Redo2 size={18} /><span>重做</span></button></div></div>
@@ -417,7 +427,15 @@ function Table({ room, me, act, busy, connected, notify, home, openAdmin, change
     {sheet === 'configure' && me.id === room.hostId && <RoomConfigSheet key="configure" room={room} act={act} busy={locked} close={close} />}
     {sheet === 'adjust' && me.id === room.hostId && <RoundSettingsSheet key="adjust" room={room} act={act} busy={locked || pending} close={close} />}
     {sheet === 'settlement-scores' && me.id === room.hostId && current.status === 'settling' && <SettlementScoresSheet key="settlement-scores" room={room} act={act} busy={locked} close={close} />}
-    {sheet === 'settings' && <Sheet key="settings" title="牌桌设置" close={close}><div className="settings-actions">{me.id === room.hostId && <Button className="full" disabled={locked || pending} onClick={() => setSheet('adjust')}>修改当前场况<ChevronRight size={17} /></Button>}{pending && me.id === room.hostId && <p className="field-help">先完成或取消当前结算，再修改场况。</p>}<Button className="full" onClick={changePassword}>修改密码</Button></div><div className="settings-row"><span>保持屏幕常亮<small>{'wakeLock' in navigator ? '前台显示时生效' : '需要 HTTPS 与支持的浏览器'}</small></span><Toggle label="保持屏幕常亮" checked={wake} disabled={!('wakeLock' in navigator)} onChange={setWake} /></div><VoiceSettings voice={voice} /><details className="rules"><summary>使用说明</summary><p>一人创建牌桌，其他人扫码或输入房间码加入。满员后由房主开始对局。</p><p>点击对手的点数卡片发起支付；自摸、立直和流局使用下方按钮，按页面提示确认。</p><p>记错可用撤销、重做；房主也可在牌桌设置中修改当前场况。每笔操作可在对战记录中查看。</p><p>打完后由房主结束对战、确认结算。返回大厅可继续下一场；首页“我的对局”可查看个人战绩。</p><p>换设备时登录原账号即可回座。修改密码后，所有设备需重新登录。</p></details></Sheet>}</AnimatePresence>
+    {sheet === 'settings' && <Sheet key="settings" title="牌桌设置" close={close}>
+      <div className="settings-actions">{me.id === room.hostId && <Button className="full" disabled={locked || pending} onClick={() => setSheet('adjust')}>修改当前场况<ChevronRight size={17} /></Button>}</div>
+      <RuleSwitches count={count} tsumoConfirm={room.config.tsumoConfirm} autoDice={room.config.autoDice} playing disabled={locked || pending || me.id !== room.hostId}
+        setTsumoConfirm={(tsumoConfirm) => act({ type: 'table-settings', tsumoConfirm, autoDice: room.config.autoDice })}
+        setAutoDice={(autoDice) => act({ type: 'table-settings', autoDice, tsumoConfirm: room.config.tsumoConfirm })} />
+      <p className="field-help">{me.id !== room.hostId ? '以上规则由房主修改，全桌同步。' : pending ? '先完成或取消当前结算，再修改牌桌设置。' : '修改后全桌同步。'}</p>
+      <div className="settings-row"><span>保持屏幕常亮<small>{'wakeLock' in navigator ? '前台显示时生效' : '需要 HTTPS 与支持的浏览器'}</small></span><Toggle label="保持屏幕常亮" checked={wake} disabled={!('wakeLock' in navigator)} onChange={setWake} /></div><VoiceSettings voice={voice} />
+      <details className="rules"><summary>使用说明</summary><p>一人创建牌桌，其他人扫码或输入房间码加入。满员后由房主开始对局。</p><p>点击对手的点数卡片发起支付；自摸、立直和流局使用下方按钮，按页面提示确认。</p><p>记错可用撤销、重做；房主也可在牌桌设置中修改当前场况。每笔操作可在对战记录中查看。</p><p>打完后由房主结束对战、确认结算。返回大厅可继续下一场；首页“我的对局”可查看个人战绩。</p><p>换设备时登录原账号即可回座。对局中禁止修改密码，结束并确认结算后可修改。</p></details>
+    </Sheet>}</AnimatePresence>
   </main>;
 }
 
@@ -434,6 +452,8 @@ function App() {
   const [accountRecord, setAccountRecord] = useState(null);
   const [adminOpen, setAdminOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
+  const playing = ['playing', 'settling'].includes(room?.state.status);
+  useEffect(() => { if (playing) { setPasswordOpen(false); setAdminOpen(false); } }, [playing]);
   const inFlight = useRef(false);
   const notify = (text) => setMessage(text);
   function receive(next) { setRoom((previous) => !previous || previous.code !== next.code || previous.revision > next.revision ? previous : next); }
@@ -489,11 +509,11 @@ function App() {
   }
   if (!ready) return <main className="connecting"><Logo /><LoaderCircle className="spin" size={28} /><p>{connectionError || '正在连接…'}</p>{connectionError && <Button onClick={() => location.reload()}>重试</Button>}</main>;
   return <NoticeContext.Provider value={message}><AnimatePresence mode="wait" initial={false}><PageTransition key={!user ? 'auth' : !room ? 'lobby' : `room-${room.code}-${room.state.status === 'ended' ? 'waiting' : room.state.status}`}>
-    {!user ? <main className="lobby page"><header className="app-header"><Logo subtitle /></header><HomeAnnouncements /><div className="lobby-layout"><AuthForm onAuth={restore} /></div><ProjectLink /></main> : room && me ? <Table room={room} me={me} act={act} busy={busy} connected={connected} notify={notify} home={home} openAdmin={openAdmin} changePassword={() => setPasswordOpen(true)} /> : <Lobby user={user} onEnter={enter} notify={notify} openAccount={() => setAccountOpen(true)} openAdmin={openAdmin} adminOpen={adminOpen} />}
+    {!user ? <main className="lobby page"><header className="app-header"><Logo subtitle /></header><Announcements /><div className="lobby-layout"><AuthForm onAuth={restore} /></div><ProjectLink /></main> : room && me ? <Table room={room} me={me} act={act} busy={busy} connected={connected} notify={notify} home={home} openAdmin={openAdmin} adminOpen={adminOpen && !playing} changePassword={() => setPasswordOpen(true)} /> : <Lobby user={user} onEnter={enter} notify={notify} openAccount={() => setAccountOpen(true)} openAdmin={openAdmin} adminOpen={adminOpen} />}
     </PageTransition></AnimatePresence>
     <AnimatePresence>{accountOpen && user && <Sheet key="account" title="我的对局" close={() => setAccountOpen(false)} wide><AccountHistory user={user} openRecord={setAccountRecord} logout={logout} changePassword={() => setPasswordOpen(true)} /></Sheet>}{accountRecord && <Records key="account-record" record={accountRecord} close={() => setAccountRecord(null)} />}</AnimatePresence>
     <AnimatePresence>{adminOpen && user?.isAdmin && !['playing', 'settling'].includes(room?.state.status) && <Sheet key="admin" title="管理中心" close={() => setAdminOpen(false)}><AdminUsers user={user} onSaved={accountSaved} /></Sheet>}</AnimatePresence>
-    <AnimatePresence>{passwordOpen && user && <Sheet key="password" title="修改密码" close={() => setPasswordOpen(false)}><ChangePasswordForm user={user} onChanged={() => { unauthorized(); notify('密码已修改，请使用新密码登录'); }} /></Sheet>}</AnimatePresence>
+    <AnimatePresence>{passwordOpen && user && !playing && <Sheet key="password" title="修改密码" close={() => setPasswordOpen(false)}><ChangePasswordForm user={user} onChanged={() => { unauthorized(); notify('密码已修改，请使用新密码登录'); }} /></Sheet>}</AnimatePresence>
     <AnimatePresence>{message && <motion.div key={message} className="toast as-glass as-glass-large" data-adapt="off" data-lens="off" role="status" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.16 }}>{message}<button aria-label="关闭提示" onClick={() => setMessage('')}><X size={16} /></button></motion.div>}</AnimatePresence></NoticeContext.Provider>;
 }
 

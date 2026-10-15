@@ -72,11 +72,18 @@ export function Segmented({ label, value, onChange, options, className = '' }) {
 export function Toggle({ label, checked, disabled, onChange }) {
   const ref = useRef(null);
   const handler = useRef(onChange);
-  handler.current = onChange;
+  const value = useRef(checked);
+  value.current = checked;
+  handler.current = (next) => { if (!disabled) onChange(next); };
   useEffect(() => {
     const el = ref.current;
     window.LiquidGlass.toggle(el);
-    const change = () => handler.current(el.getAttribute('aria-checked') === 'true');
+    const change = () => {
+      const next = el.getAttribute('aria-checked') === 'true';
+      // 保存失败时仍显示 React 中的已保存状态。
+      el.setAttribute('aria-checked', String(value.current));
+      handler.current(next);
+    };
     el.addEventListener('change', change);
     return () => el.removeEventListener('change', change);
   }, []);
