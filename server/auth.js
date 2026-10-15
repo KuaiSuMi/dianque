@@ -1,4 +1,4 @@
-import { createHash, randomBytes, pbkdf2Sync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { check } from './game.js';
 
 export const SESSION_SECONDS = 30 * 24 * 60 * 60;
@@ -12,7 +12,8 @@ export function credentials(body) {
   return { nickname, key: nickname.toLowerCase(), password: body.password };
 }
 export function passwordHash(password, salt = randomBytes(16).toString('hex')) {
-  return { salt, hash: pbkdf2Sync(password, Buffer.from(salt, 'hex'), 600000, 32, 'sha256').toString('hex') };
+  // OWASP 的 32 MiB 档位，成本低于 Cloudflare 原生 scrypt 的 2^20 上限。
+  return { salt, hash: scryptSync(password, Buffer.from(salt, 'hex'), 32, { N: 32768, r: 8, p: 3, maxmem: 64 * 1024 * 1024 }).toString('hex') };
 }
 export function verifyPassword(password, user) {
   const actual = passwordHash(password, user?.salt || '0'.repeat(32)).hash;

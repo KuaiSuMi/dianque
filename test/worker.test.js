@@ -46,12 +46,16 @@ test('Workers 账号：密码校验、唯一昵称、Cookie、跨站拒绝、记
   try {
     assert.equal((await request(mf, '/rooms')).status, 401);
     assert.equal((await request(mf, '/register', { body: { nickname: '测试', password: 'short' } })).status, 400);
+    const missing = await request(mf, '/login', { body: { nickname: '不存在的账号', password } });
+    assert.equal(missing.status, 401); assert.equal(missing.body.error, '昵称或密码不正确');
+    assert.equal(missing.cookie, undefined);
     const user = await register(mf, 'Test');
     assert.match(user.headers.get('Set-Cookie'), /HttpOnly; SameSite=Lax; Max-Age=2592000; Secure/);
     assert.deepEqual(Object.keys(user.body.user).sort(), ['id', 'nickname']);
     assert.equal((await request(mf, '/register', { body: { nickname: ' ｔｅｓｔ ', password } })).status, 409);
     assert.equal((await request(mf, '/login', { body: { nickname: 'Test', password: 'wrong-password' } })).status, 401);
     const login = await request(mf, '/login', { body: { nickname: 'test', password } });
+    assert.equal(login.status, 200);
     assert.equal(login.body.user.id, user.body.user.id); assert.notEqual(login.cookie, user.cookie);
     assert.equal((await request(mf, '/rooms', { cookie: user.cookie, body: {}, headers: { Origin: 'https://evil.test' } })).status, 403);
     assert.equal((await request(mf, '/rooms', { cookie: user.cookie, body: { playerCount: 5 } })).status, 400);
