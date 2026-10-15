@@ -123,6 +123,7 @@
   }
 
   function applyLens(el, opts = {}) {
+    if (el.__lgLens === false || el.dataset.lens === 'off') return;
     if (!supportsLens || liteMode() || reduceTransparency() || moreContrast()) return;
     const rect = el.getBoundingClientRect();
     if (rect.width < 8 || rect.height < 8) return;

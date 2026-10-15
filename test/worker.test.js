@@ -30,7 +30,7 @@ async function register(mf, nickname) {
   return result;
 }
 async function administrator(mf) {
-  const user = await register(mf, 'Yuri');
+  const user = await register(mf, 'TestAdmin');
   assert.equal(user.body.user.isAdmin, false, '昵称不能自动获得管理员权限');
   const db = (await mf.getDurableObjectNamespace('APP')).getByName('main');
   await db.one('UPDATE users SET id=? WHERE id=?', adminId, user.body.user.id);
@@ -144,11 +144,11 @@ test('管理员：服务端权限、字段白名单、用户查询分页与输�
     assert.equal((await request(mf, target, { cookie, body: { nickname: '   ' } })).status, 400);
     assert.equal((await request(mf, target, { cookie, body: { password: 'short' } })).status, 400);
     assert.equal((await request(mf, target, { cookie, body: {} })).status, 400);
-    assert.equal((await request(mf, target, { cookie, body: { nickname: ' ＹＵＲＩ ' } })).status, 409);
+    assert.equal((await request(mf, target, { cookie, body: { nickname: ' ＴＥＳＴＡＤＭＩＮ ' } })).status, 409);
     assert.equal((await request(mf, target, { cookie, body: { nickname: '跨站' }, headers: { Origin: 'https://evil.test' } })).status, 403);
     assert.equal((await request(mf, `/admin/users/${randomUUID()}`, { cookie, body: { nickname: '不存在' } })).status, 404);
     assert.equal((await request(mf, '/admin/users?offset=-1', { cookie })).status, 400);
-    const result = await request(mf, '/admin/users?q=%EF%BC%B9%EF%BC%B5%EF%BC%B2%EF%BC%A9', { cookie });
+    const result = await request(mf, '/admin/users?q=%EF%BC%B4%EF%BC%A5%EF%BC%B3%EF%BC%B4%EF%BC%A1%EF%BC%A4%EF%BC%AD%EF%BC%A9%EF%BC%AE', { cookie });
     assert.equal(result.body.total, 1);
     assert.deepEqual(Object.keys(result.body.users[0]).sort(), ['createdAt', 'id', 'isAdmin', 'nickname']);
     assert.equal(result.body.users[0].isAdmin, true);
@@ -187,7 +187,7 @@ test('管理员改名：保留账号、密码和战绩，房间实时同步，�
     assert.equal((await request(mf, `/matches/${record.id}`, { cookie: member.cookie })).body.players[0].name, '牌友');
     assert.equal((await request(mf, `/admin/users/${adminId}`, { cookie, body: { nickname: '管理者' } })).body.user.isAdmin, true);
     assert.equal((await request(mf, '/session', { cookie })).body.user.isAdmin, true);
-    assert.equal((await register(mf, 'Yuri')).body.user.isAdmin, false);
+    assert.equal((await register(mf, 'TestAdmin')).body.user.isAdmin, false);
     ws.close();
   } finally { await mf.dispose(); }
 });
@@ -228,7 +228,7 @@ test('管理员重置密码：事务回滚、撤销全部会话和连接、解�
     const self = await request(mf, `/admin/users/${adminId}`, { cookie, body: { password: body.password } });
     assert.equal(self.status, 200); assert.equal(self.body.signedOut, true); assert.match(self.headers.get('Set-Cookie'), /Max-Age=0/);
     assert.equal((await request(mf, '/admin/users', { cookie })).status, 401);
-    assert.equal((await request(mf, '/login', { body: { nickname: 'Yuri', password: body.password } })).body.user.isAdmin, true);
+    assert.equal((await request(mf, '/login', { body: { nickname: 'TestAdmin', password: body.password } })).body.user.isAdmin, true);
   } finally { await mf.dispose(); }
 });
 

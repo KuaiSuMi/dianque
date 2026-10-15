@@ -270,7 +270,7 @@
    backdrop-filter, and promoting all of them to their own composited layers
    up front costs far more than it saves — a page with a few dozen glass
    surfaces drops frames on any drag. Promote only what is actually moving. */
-.as-glass.is-lit, .as-glass.is-pressed, .as-glass-interactive:active { will-change: transform; }
+.as-glass-interactive.is-pressed, .as-glass-interactive:active { will-change: transform; }
 /* pointer is on/over the element: light tracks it closely */
 .as-glass.is-lit { transition-duration: var(--as-dur-fast); }
 /* Highlights layer: "light sources inside the environment shine on the material
