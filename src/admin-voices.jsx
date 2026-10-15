@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, ChevronRight, LoaderCircle } from 'lucide-react';
 import { api } from './api';
+import { PanelTransition } from './ui';
 
 export function AdminVoices() {
   const [items, setItems] = useState(null);
@@ -42,7 +43,7 @@ export function AdminVoices() {
   return <section>
     {notice && <p className="field-help" role="status">{notice}</p>}
     {error && <p className="warning-text" role="alert">{error}</p>}
-    {editing ? <>
+    <PanelTransition view={editing ? deleting ? 'delete' : editing.id || 'new' : 'list'}>{editing ? <>
       <button className="text-button" disabled={busy} onClick={() => edit(null)}><ArrowLeft size={17} />音频列表</button>
       <form className="admin-section" onSubmit={save}><fieldset className="admin-fields" disabled={busy}>
         {deleting ? <div className="admin-confirm"><p>删除「{editing.name}」？删除后所有玩家都无法再选择或播放这段语音。</p><div className="panel-actions"><button type="button" className="button" onClick={() => setDeleting(false)}>保留音频</button><button className="button danger">确认删除音频</button></div></div> : <>
@@ -50,7 +51,7 @@ export function AdminVoices() {
           <label>音频名称<input required maxLength={60} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></label>
           {(editing.url || preview) && <audio key={editing.url || preview} className="voice-preview" aria-label="试听立直音频" controls preload="metadata" src={editing.url || preview} onError={() => setError('无法播放这段音频，请检查文件和浏览器支持的格式')} />}
           <button className="button primary full" disabled={busy || (!editing.id && !file)}>{busy && <LoaderCircle size={18} className="spin" />}{busy ? '正在保存…' : editing.id ? '保存名称' : '上传音频'}</button>
-          {editing.id && <button type="button" className="text-button danger-text voice-delete" onClick={() => setDeleting(true)}>删除音频</button>}
+          {editing.id && <button type="button" className="text-button danger-text admin-delete" onClick={() => setDeleting(true)}>删除音频</button>}
         </>}
       </fieldset></form>
     </> : <>
@@ -59,6 +60,6 @@ export function AdminVoices() {
       <div className="session-list">{items?.map((item) => <button key={item.id} onClick={() => edit(item)}><span><b>{item.name}</b><small>{(item.size / 1024 / 1024).toFixed(2)} MB</small></span><ChevronRight size={20} /></button>)}</div>
       {items?.length === 0 && <p className="empty">暂无立直音频</p>}{!items && !error && <p role="status">正在读取音频…</p>}
       {error && <button className="text-button" onClick={() => { setError(''); setRevision((n) => n + 1); }}>重试</button>}
-    </>}
+    </>}</PanelTransition>
   </section>;
 }

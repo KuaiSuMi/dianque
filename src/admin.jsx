@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ArrowLeft, ChevronRight, LoaderCircle, Search, ShieldCheck } from 'lucide-react';
 import { api } from './api';
-import { Segmented, Toggle } from './ui';
+import { Expanding, PanelTransition, Segmented, Toggle } from './ui';
 import { AdminVoices } from './admin-voices';
 
 export function AdminEntry({ open }) {
@@ -36,10 +36,10 @@ function UserMatches({ target }) {
   return <section className="admin-section"><h3>对局记录</h3>
     {error && <p role="alert" className="warning-text">{error}<button className="text-button" onClick={() => setRevision((n) => n + 1)}>重试</button></p>}
     {!data && !error && <p role="status">正在读取记录…</p>}
-    {selected ? <div className="admin-confirm"><p>删除房间 {selected.code} 于 {new Date(selected.endedAt).toLocaleString('zh-CN')} 结束的整场记录？</p><p className="warning-text">同场所有玩家的记录和统计都会移除，无法撤销。</p><div className="panel-actions"><button className="button" disabled={busy} onClick={() => setSelected(null)}>保留</button><button className="button danger" disabled={busy} onClick={remove}>删除整场记录</button></div></div> : data && <>
+    <PanelTransition view={selected ? 'confirm' : 'list'}>{selected ? <div className="admin-confirm"><p>删除房间 {selected.code} 于 {new Date(selected.endedAt).toLocaleString('zh-CN')} 结束的整场记录？</p><p className="warning-text">同场所有玩家的记录和统计都会移除，无法撤销。</p><div className="panel-actions"><button className="button" disabled={busy} onClick={() => setSelected(null)}>保留</button><button className="button danger" disabled={busy} onClick={remove}>删除整场记录</button></div></div> : data && <>
       <div className="session-list">{data.matches.map((match) => <button key={match.id} disabled={busy} onClick={() => setSelected(match)}><span><b>{match.code} · {match.playerCount} 人对局</b><small>{new Date(match.endedAt).toLocaleString('zh-CN')}</small><small>{match.players.map((p) => p.name).join('、')}</small></span><span className="danger-text">移除</span></button>)}</div>
       {!data.matches.length && <p className="empty">暂无对局记录</p>}<Pagination offset={offset} total={data.total} change={setOffset} />
-    </>}
+    </>}</PanelTransition>
   </section>;
 }
 
@@ -75,7 +75,7 @@ function UserEditor({ target, user, back, saved }) {
     {error && <p role="alert" className="warning-text">{error}</p>}
     {!creating && <>
       {user.isSuperAdmin && !target.isSuperAdmin && <div className="settings-row"><span>普通管理员<small>可管理账号、战绩、公告和立直音频</small></span><Toggle label="普通管理员" checked={target.isAdmin} disabled={busy} onChange={(isAdmin) => mutate(`/admin/users/${target.id}/role`, { method: 'POST', body: { isAdmin } })} /></div>}
-      {canEdit && target.id !== user.id && !target.isSuperAdmin && <div className="admin-section">{deleting ? <div className="admin-confirm"><p>确定删除账号「{target.nickname}」？该账号将无法登录，同场其他玩家的战绩保留。</p><div className="panel-actions"><button className="button" disabled={busy} onClick={() => setDeleting(false)}>保留账号</button><button className="button danger" disabled={busy} onClick={() => mutate(`/admin/users/${target.id}`, { method: 'DELETE' })}>确认删除账号</button></div></div> : <button className="text-button danger-text" disabled={busy} onClick={() => setDeleting(true)}>删除账号</button>}</div>}
+      {canEdit && target.id !== user.id && !target.isSuperAdmin && <div className="admin-section"><PanelTransition view={deleting ? 'confirm' : 'button'}>{deleting ? <div className="admin-confirm"><p>确定删除账号「{target.nickname}」？该账号将无法登录，同场其他玩家的战绩保留。</p><div className="panel-actions"><button className="button" disabled={busy} onClick={() => setDeleting(false)}>保留账号</button><button className="button danger" disabled={busy} onClick={() => mutate(`/admin/users/${target.id}`, { method: 'DELETE' })}>确认删除账号</button></div></div> : <button className="text-button danger-text" disabled={busy} onClick={() => setDeleting(true)}>删除账号</button>}</PanelTransition></div>}
       <UserMatches target={target} />
     </>}
   </>;
@@ -99,8 +99,7 @@ function Users({ user, onSaved }) {
   function saved(result) {
     onSaved(result); setSelected(null); setOffset(0); setNotice('操作已保存'); setRevision((n) => n + 1);
   }
-  if (selected) return <UserEditor key={selected.id || 'new'} target={selected} user={user} back={() => setSelected(null)} saved={saved} />;
-  return <section className="admin-users">
+  return <PanelTransition view={selected ? selected.id || 'new' : 'list'}>{selected ? <UserEditor target={selected} user={user} back={() => setSelected(null)} saved={saved} /> : <section className="admin-users">
     <div className="account-heading"><strong>账号</strong><button className="text-button" onClick={() => setSelected({})}>创建账号</button></div>
     <form className="admin-search" role="search" onSubmit={(e) => { e.preventDefault(); setQuery(search); setOffset(0); setRevision((n) => n + 1); }}><label>搜索昵称<input type="search" maxLength={128} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="输入全部或部分昵称" /></label><button className="button" aria-label="搜索用户"><Search size={18} /></button></form>
     {notice && <p className="field-help" role="status">{notice}</p>}
@@ -109,7 +108,7 @@ function Users({ user, onSaved }) {
     {data && <><p className="field-help">共 {data.total} 个账号</p><div className="session-list admin-list">{data.users.map((target) => <button key={target.id} onClick={() => { setSelected(target); setNotice(''); }} aria-label={`编辑 ${target.nickname}`}><span><b>{target.nickname}</b>{target.isAdmin && <span className="admin-badge">{target.isSuperAdmin ? '超级管理员' : '管理员'}</span>}<small>注册于 {new Date(target.createdAt).toLocaleDateString('zh-CN')}</small></span><ChevronRight size={20} /></button>)}</div>
       {!data.users.length && <p className="empty">没有匹配的账号</p>}<Pagination offset={offset} total={data.total} change={setOffset} />
     </>}
-  </section>;
+  </section>}</PanelTransition>;
 }
 
 function Announcements() {
@@ -118,36 +117,46 @@ function Announcements() {
   const [revision, setRevision] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [notice, setNotice] = useState('');
   useEffect(() => {
     const abort = new AbortController();
     api('/admin/announcements', { signal: abort.signal }).then(setItems).catch((e) => { if (!abort.signal.aborted) setError(e.message); });
     return () => abort.abort();
   }, [revision]);
+  function edit(item) { setEditing(item); setDeleting(false); setError(''); setNotice(''); }
   async function submit(event) {
-    event.preventDefault(); setBusy(true); setError('');
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true); setError('');
     try {
       const { id, title, content, published, revision } = editing;
-      await api(`/admin/announcements${id ? `/${id}` : ''}`, { method: 'POST', body: { title, content, published: !!published, ...(id ? { revision } : {}) } });
-      setEditing(null); setRevision((n) => n + 1);
+      if (deleting) {
+        await api(`/admin/announcements/${id}?revision=${revision}`, { method: 'DELETE' });
+        setItems((items) => items.filter((item) => item.id !== id));
+      } else await api(`/admin/announcements${id ? `/${id}` : ''}`, { method: 'POST', body: { title, content, published: !!published, ...(id ? { revision } : {}) } });
+      setNotice(deleting ? '公告已删除' : '公告已保存');
+      setEditing(null); setDeleting(false); setRevision((n) => n + 1);
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
   }
-  return <section>{error && <p className="warning-text" role="alert">{error}</p>}{editing ? <>
-    <button className="text-button" disabled={busy} onClick={() => { setEditing(null); setError(''); }}><ArrowLeft size={17} />公告列表</button>
-    <form className="admin-section" onSubmit={submit}><fieldset className="admin-fields" disabled={busy}>
+  return <section>{notice && <p className="field-help" role="status">{notice}</p>}{error && <p className="warning-text" role="alert">{error}</p>}<PanelTransition view={editing ? deleting ? 'delete' : editing.id || 'new' : 'list'}>{editing ? <>
+    <button className="text-button" disabled={busy} onClick={() => edit(null)}><ArrowLeft size={17} />公告列表</button>
+    {deleting ? <div className="admin-section admin-confirm"><p>确定删除公告「{editing.title}」？删除后将从首页和管理中心移除，无法撤销。</p><div className="panel-actions"><button className="button" disabled={busy} onClick={() => setDeleting(false)}>保留公告</button><button className="button danger" disabled={busy} onClick={submit}>{busy && <LoaderCircle size={18} className="spin" />}确认删除公告</button></div></div> : <form className="admin-section" onSubmit={submit}><fieldset className="admin-fields" disabled={busy}>
       <label>标题<input maxLength={80} required value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} /></label>
       <label>正文<textarea maxLength={3000} rows={8} required value={editing.content} onChange={(e) => setEditing({ ...editing, content: e.target.value })} /></label>
       <div className="settings-row"><span>在首页发布<small>关闭后仅管理员可见</small></span><Toggle label="在首页发布" checked={!!editing.published} disabled={busy} onChange={(published) => setEditing({ ...editing, published })} /></div>
       <button className="button primary full" disabled={busy}>{editing.published ? '保存并发布' : '保存草稿'}</button>
-    </fieldset></form>
-  </> : <><div className="account-heading"><strong>公告</strong><button className="text-button" onClick={() => { setEditing({ title: '', content: '', published: true }); setError(''); }}>新建公告</button></div>
-    <div className="session-list">{items?.map((item) => <button key={item.id} onClick={() => { setEditing(item); setError(''); }}><span><b>{item.title}</b><small>{item.published ? '已发布' : '草稿'} · {new Date(item.updated_at).toLocaleString('zh-CN')}</small></span><ChevronRight size={20} /></button>)}</div>
+      {editing.id && <button type="button" className="text-button danger-text admin-delete" onClick={() => setDeleting(true)}>删除公告</button>}
+    </fieldset></form>}
+  </> : <><div className="account-heading"><strong>公告</strong><button className="text-button" onClick={() => edit({ title: '', content: '', published: true })}>新建公告</button></div>
+    <div className="session-list">{items?.map((item) => <button key={item.id} onClick={() => edit(item)}><span><b>{item.title}</b><small>{item.published ? '已发布' : '草稿'} · {new Date(item.updated_at).toLocaleString('zh-CN')}</small></span><ChevronRight size={20} /></button>)}</div>
     {items?.length === 0 && <p className="empty">暂无公告</p>}{!items && !error && <p role="status">正在读取公告…</p>}
     {error && <button className="text-button" onClick={() => { setError(''); setRevision((n) => n + 1); }}>重试</button>}
-  </>}</section>;
+  </>}</PanelTransition></section>;
 }
 
 export function AdminUsers({ user, onSaved }) {
   const [tab, setTab] = useState('users');
-  return <><Segmented className="admin-tabs" label="管理内容" value={tab} onChange={setTab} options={[["users", "账号与战绩"], ["announcements", "公告"], ["voices", "立直音频"]]} />{tab === 'users' ? <Users user={user} onSaved={onSaved} /> : tab === 'announcements' ? <Announcements /> : <AdminVoices />}</>;
+  return <Expanding initial={false}><Segmented className="admin-tabs" label="管理内容" value={tab} onChange={setTab} options={[["users", "账号与战绩"], ["announcements", "公告"], ["voices", "立直音频"]]} /><PanelTransition view={tab}>{tab === 'users' ? <Users user={user} onSaved={onSaved} /> : tab === 'announcements' ? <Announcements /> : <AdminVoices />}</PanelTransition></Expanding>;
 }

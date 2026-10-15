@@ -201,6 +201,15 @@ export class Dianque {
   announcements(request, url, body) {
     if (url.pathname === '/api/admin/announcements' && request.method === 'GET') return json(this.rows('SELECT * FROM announcements ORDER BY updated_at DESC,id DESC LIMIT 100'));
     const route = url.pathname.match(/^\/api\/admin\/announcements(?:\/([a-f0-9-]{36}))?$/);
+    if (route?.[1] && request.method === 'DELETE') {
+      const revision = Number(url.searchParams.get('revision'));
+      check(Number.isSafeInteger(revision) && revision > 0, '公告版本无效');
+      const previous = this.one('SELECT revision FROM announcements WHERE id=?', route[1]);
+      if (!previous) fail(404, '公告不存在或已被删除');
+      check(revision === previous.revision, '公告已被修改，请重新打开后再删除');
+      this.rows('DELETE FROM announcements WHERE id=?', route[1]);
+      return json({ ok: true });
+    }
     if (!route || request.method !== 'POST') fail(404, '接口不存在');
     check(Object.keys(body).every((key) => ['title', 'content', 'published', 'revision'].includes(key)), '公告字段无效');
     check(typeof body.title === 'string' && body.title.trim().length > 0 && body.title.length <= 80, '公告标题须为 1～80 字');

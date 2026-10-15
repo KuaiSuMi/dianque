@@ -155,6 +155,8 @@ svg { flex-shrink: 0; }
 .amount-caption { margin: 16px 0 12px; color: var(--muted); font-size: 12px; }
 .expanding { overflow: clip; overflow-clip-margin: 6px; }
 .expanding-content { display: flow-root; }
+.panel-transition { display:flow-root; }
+.panel-transition:focus { outline:none; }
 .payment-form { overflow-anchor: none; }
 .point-patterns { margin-top: 12px; padding: 14px 16px; border-radius: 16px; background: var(--raised); }
 .point-patterns h3 { color: var(--muted); font-size: 12px; font-weight: 500; margin-bottom: 6px; }
@@ -469,7 +471,7 @@ input:focus, select:focus {border-color:var(--mint);
 .announcement p { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.8; margin-top:14px; }
 .voice-settings { margin:20px 0; }
 .voice-preview { display:block; width:100%; margin:0 0 20px; }
-.voice-delete { margin-top:20px; }
+.admin-delete { margin-top:20px; }
 .admin-fields input[type="file"] { max-width:100%; padding:12px; font-size:13px; }
 .dice-result { display:flex; align-items:center; justify-content:center; gap:16px; margin:10px 0 18px; color:var(--muted); font-size:12px; }
 .dice-result strong { font-size:15px; color:var(--text); }

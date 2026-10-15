@@ -150,6 +150,40 @@ test('公告：管理员发布和编辑、纯文本、并发版本检查、撤�
   } finally { await mf.close(); await rm(path, { recursive: true, force: true }); }
 });
 
+test('公告删除：管理员权限、跨站拒绝、版本检查、草稿和已发布公告清除及重启持久化', async () => {
+  const path = await mkdtemp(join(tmpdir(), 'dianque-notice-delete-'));
+  let mf = await runtime(path);
+  try {
+    const { cookie } = await administrator(mf), member = await register(mf, '公告管理者');
+    const body = { title: '待删除公告', content: '删除后不再展示', published: true };
+    const created = await request(mf, '/admin/announcements', { cookie, body });
+    const route = `/admin/announcements/${created.body.id}`;
+    const remove = { method: 'DELETE', cookie };
+    assert.equal((await request(mf, `${route}?revision=1`, { method: 'DELETE' })).status, 401);
+    assert.equal((await request(mf, `${route}?revision=1`, { ...remove, cookie: member.cookie })).status, 403);
+    assert.equal((await request(mf, `${route}?revision=1`, { ...remove, headers: { Origin: 'https://evil.test' } })).status, 403);
+    for (const revision of ['', '0', '-1', '1.5', 'bad']) assert.equal((await request(mf, `${route}?revision=${revision}`, remove)).status, 400);
+    assert.equal((await request(mf, route, { cookie, body: { ...body, title: '已更新公告', revision: 1 } })).status, 200);
+    assert.equal((await request(mf, `${route}?revision=1`, remove)).status, 400);
+    assert.equal((await request(mf, '/announcements')).body[0].title, '已更新公告');
+    mf.app.rows("CREATE TRIGGER prevent_notice_delete BEFORE DELETE ON announcements BEGIN SELECT RAISE(ABORT, 'test delete failure'); END");
+    assert.equal((await request(mf, `${route}?revision=2`, remove)).status, 500);
+    assert.equal((await request(mf, '/announcements')).body.length, 1);
+    mf.app.rows('DROP TRIGGER prevent_notice_delete');
+    assert.equal((await request(mf, `/admin/users/${member.body.user.id}/role`, { cookie, body: { isAdmin: true } })).status, 200);
+    assert.equal((await request(mf, `${route}?revision=2`, { ...remove, cookie: member.cookie })).status, 200);
+    assert.deepEqual((await request(mf, '/announcements')).body, []);
+    assert.deepEqual((await request(mf, '/admin/announcements', { cookie })).body, []);
+    assert.equal((await request(mf, `${route}?revision=2`, remove)).status, 404);
+    assert.equal((await request(mf, route, { cookie, body: { ...body, revision: 2 } })).status, 404);
+    const draft = await request(mf, '/admin/announcements', { cookie, body: { ...body, published: false } });
+    assert.equal((await request(mf, `/admin/announcements/${draft.body.id}?revision=1`, remove)).status, 200);
+    await mf.close(); mf = await runtime(path);
+    assert.deepEqual((await request(mf, '/announcements')).body, []);
+    assert.deepEqual((await request(mf, '/admin/announcements', { cookie })).body, []);
+  } finally { await mf.close(); await rm(path, { recursive: true, force: true }); }
+});
+
 function wave() {
   const data = Buffer.alloc(1644);
   data.write('RIFF'); data.writeUInt32LE(data.length - 8, 4); data.write('WAVEfmt ', 8);

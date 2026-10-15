@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { motion, useIsPresent, useReducedMotion } from 'motion/react';
+import { AnimatePresence, motion, useIsPresent, useReducedMotion } from 'motion/react';
 import './vendor/liquid-glass.js';
 
 export const spring = { type: 'spring', duration: 0.45, bounce: 0.12 };
 
-export function Expanding({ children, className = '' }) {
+export function Expanding({ children, className = '', initial = true }) {
   const ref = useRef(null);
   const [height, setHeight] = useState(null);
   const present = useIsPresent();
@@ -17,12 +17,30 @@ export function Expanding({ children, className = '' }) {
     return () => observer.disconnect();
   }, []);
   return <motion.div className="expanding" inert={!present}
-    initial={{ height: reduce ? 'auto' : 0, opacity: 0 }}
+    initial={initial && { height: reduce ? 'auto' : 0, opacity: 0 }}
     animate={{ height: height ?? 'auto', opacity: 1 }}
     exit={{ height: reduce ? height : 0, opacity: 0 }}
     transition={{ height: { duration: reduce ? 0 : 0.2, ease: [0.23, 1, 0.32, 1] }, opacity: { duration: reduce ? 0.1 : 0.16 } }}>
     <div ref={ref} className={`expanding-content ${className}`}>{children}</div>
   </motion.div>;
+}
+
+function Panel({ children, focusOnMount }) {
+  const ref = useRef(null);
+  const present = useIsPresent();
+  const reduce = useReducedMotion();
+  useLayoutEffect(() => {
+    if (focusOnMount && (document.activeElement === document.body || document.activeElement?.closest('[inert]'))) ref.current.focus();
+  }, []);
+  return <motion.div ref={ref} className="panel-transition" tabIndex={-1} inert={!present}
+    initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+    transition={{ duration: reduce ? 0.08 : 0.14, ease: [0.23, 1, 0.32, 1] }}>{children}</motion.div>;
+}
+
+export function PanelTransition({ view, children }) {
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; }, []);
+  return <AnimatePresence initial={false} mode="wait"><Panel key={view} focusOnMount={mounted.current}>{children}</Panel></AnimatePresence>;
 }
 
 export function PageTransition({ children }) {
