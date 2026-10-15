@@ -17,7 +17,7 @@ export function AuthForm({ onAuth }) {
   }
   return <section className="entry-panel auth-panel"><h1>{mode === 'register' ? '注册点雀' : '登录点雀'}</h1><Segmented label="账号操作" className="entry-tabs" value={mode} onChange={(value) => { setMode(value); setError(''); }} options={ [['login', '登录'], ['register', '注册']] } />
     <form onSubmit={submit}><label>昵称<input autoComplete="username" maxLength={12} value={nickname} onChange={(e) => setNickname(e.target.value)} required /></label><label>密码<input type="password" autoComplete={mode === 'register' ? 'new-password' : 'current-password'} minLength={8} maxLength={128} placeholder="至少 8 位" value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
-      {mode === 'register' && <p className="field-help">昵称用于登录。请保存密码，当前不提供密码找回。</p>}{error && <p role="alert" className="warning-text">{error}</p>}
+      {mode === 'register' && <p className="field-help">昵称用于登录。请保存密码，忘记时可联系管理员重置。</p>}{error && <p role="alert" className="warning-text">{error}</p>}
       <button className="button primary full" disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <ArrowRight size={18} />}{mode === 'register' ? '注册并登录' : '登录'}</button>
     </form></section>;
 }

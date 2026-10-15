@@ -9,15 +9,18 @@ import { Miniflare } from 'miniflare';
 const contents = await readFile('.impeccable/tmp/worker/worker.js', 'utf8');
 const origin = 'https://dianque.test';
 const password = 'test-password-123';
+const adminId = '00000000-0000-4000-8000-000000000001';
 function runtime(path) {
   return new Miniflare({ resourcePersistencePath: path, workers: [{ config: {
     name: 'dianque', compatibilityDate: '2026-10-15', compatibilityFlags: ['nodejs_compat'],
     manifest: { mainModule: 'worker.js', modules: { 'worker.js': { type: 'esm', contents } } },
-    env: { APP: { type: 'durable-object', worker: 'dianque', exportName: 'Dianque' } },
+    env: { APP: { type: 'durable-object', worker: 'dianque', exportName: 'Dianque' }, ADMIN_USER_ID: { type: 'text', value: adminId } },
     exports: { Dianque: { type: 'durable-object', storage: 'sqlite' } }
   } }] });
 }
 async function request(mf, path, { cookie, body, method = body ? 'POST' : 'GET', headers = {} } = {}) {
+  // workerd 拒绝跨站请求时不读取正文，避免测试客户端复用已被关闭的连接。
+  if (headers.Origin && headers.Origin !== origin) headers = { ...headers, Connection: 'close' };
   const response = await mf.dispatchFetch(origin + '/api' + path, { method, headers: { Origin: origin, 'CF-Connecting-IP': '192.0.2.1', ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined }).catch((error) => { console.error(path, error.cause); throw error; });
   return { status: response.status, body: await response.json(), cookie: response.headers.get('Set-Cookie')?.split(';')[0], headers: response.headers };
 }
@@ -25,6 +28,14 @@ async function register(mf, nickname) {
   const result = await request(mf, '/register', { body: { nickname, password } });
   assert.equal(result.status, 201, JSON.stringify(result.body));
   return result;
+}
+async function administrator(mf) {
+  const user = await register(mf, 'Yuri');
+  assert.equal(user.body.user.isAdmin, false, '昵称不能自动获得管理员权限');
+  const db = (await mf.getDurableObjectNamespace('APP')).getByName('main');
+  await db.one('UPDATE users SET id=? WHERE id=?', adminId, user.body.user.id);
+  await db.one('UPDATE sessions SET user_id=? WHERE user_id=?', adminId, user.body.user.id);
+  return { cookie: user.cookie, db };
 }
 async function socket(mf, code, cookie) {
   const response = await mf.dispatchFetch(`${origin}/api/rooms/${code}/socket`, { headers: { Origin: origin, Cookie: cookie, Upgrade: 'websocket' } });
@@ -41,6 +52,105 @@ function message(ws, predicate) {
   });
 }
 
+test('管理员：服务端权限、字段白名单、用户查询分页与输入校验', async () => {
+  const mf = runtime();
+  try {
+    const { cookie, db } = await administrator(mf);
+    const member = await register(mf, '普通用户');
+    const target = `/admin/users/${member.body.user.id}`;
+    assert.equal((await request(mf, '/admin/users')).status, 401);
+    assert.equal((await request(mf, '/admin/users', { cookie: member.cookie })).status, 403);
+    assert.equal((await request(mf, target, { cookie: member.cookie, body: { nickname: '越权', isAdmin: true } })).status, 403);
+    assert.equal((await request(mf, target, { cookie, body: { isAdmin: true } })).status, 400);
+    assert.equal((await request(mf, target, { cookie, body: { nickname: '   ' } })).status, 400);
+    assert.equal((await request(mf, target, { cookie, body: { password: 'short' } })).status, 400);
+    assert.equal((await request(mf, target, { cookie, body: {} })).status, 400);
+    assert.equal((await request(mf, target, { cookie, body: { nickname: ' ＹＵＲＩ ' } })).status, 409);
+    assert.equal((await request(mf, target, { cookie, body: { nickname: '跨站' }, headers: { Origin: 'https://evil.test' } })).status, 403);
+    assert.equal((await request(mf, `/admin/users/${randomUUID()}`, { cookie, body: { nickname: '不存在' } })).status, 404);
+    assert.equal((await request(mf, '/admin/users?offset=-1', { cookie })).status, 400);
+    const result = await request(mf, '/admin/users?q=%EF%BC%B9%EF%BC%B5%EF%BC%B2%EF%BC%A9', { cookie });
+    assert.equal(result.body.total, 1);
+    assert.deepEqual(Object.keys(result.body.users[0]).sort(), ['createdAt', 'id', 'isAdmin', 'nickname']);
+    assert.equal(result.body.users[0].isAdmin, true);
+    for (let i = 0; i < 21; i++) await db.one('INSERT INTO users(id,nickname_key,nickname,salt,password_hash,created_at) SELECT ?,?,?,salt,password_hash,? FROM users WHERE id=?', randomUUID(), `seed${i}`, `seed${i}`, new Date().toISOString(), adminId);
+    const first = (await request(mf, '/admin/users', { cookie })).body;
+    const second = (await request(mf, '/admin/users?offset=20', { cookie })).body;
+    assert.equal(first.total, 23); assert.equal(first.users.length, 20); assert.equal(second.users.length, 3);
+    assert.equal(new Set([...first.users, ...second.users].map((u) => u.id)).size, 23);
+    await db.one('INSERT INTO limits VALUES (?,?,?)', `admin:${adminId}`, 30, Date.now() + 3600000);
+    assert.equal((await request(mf, target, { cookie, body: { nickname: '限额' } })).status, 429);
+    assert.equal((await request(mf, '/session', { cookie: member.cookie })).body.user.nickname, '普通用户');
+  } finally { await mf.dispose(); }
+});
+
+test('管理员改名：保留账号、密码和战绩，房间实时同步，管理员不随昵称转移', async () => {
+  const mf = runtime();
+  try {
+    const { cookie, db } = await administrator(mf);
+    const member = await register(mf, '牌友');
+    const id = member.body.user.id;
+    const room = (await request(mf, '/rooms', { cookie: member.cookie, body: {} })).body;
+    const oldHash = (await db.one('SELECT password_hash FROM users WHERE id=?', id)).password_hash;
+    const record = { id: randomUUID(), players: [{ id, name: '牌友', seat: 0 }] };
+    await db.one('INSERT INTO matches VALUES (?,?,?,?,?,?)', record.id, room.code, new Date().toISOString(), 4, 'south', JSON.stringify(record));
+    await db.one('INSERT INTO results VALUES (?,?,?,?)', record.id, id, 1, 40000);
+    const ws = await socket(mf, room.code, member.cookie);
+    const renamed = message(ws, (value) => value.players?.[0].name === '新牌友');
+    const update = await request(mf, `/admin/users/${id}`, { cookie, body: { nickname: ' 新牌友 ' } });
+    assert.equal(update.status, 200); assert.equal(update.body.user.id, id);
+    assert.equal((await renamed).revision, room.revision + 1);
+    assert.equal((await request(mf, '/session', { cookie: member.cookie })).body.user.nickname, '新牌友');
+    assert.equal((await db.one('SELECT password_hash FROM users WHERE id=?', id)).password_hash, oldHash);
+    assert.equal((await request(mf, '/login', { body: { nickname: '牌友', password } })).status, 401);
+    assert.equal((await request(mf, '/login', { body: { nickname: '新牌友', password } })).body.user.id, id);
+    assert.equal((await request(mf, '/history', { cookie: member.cookie })).body.games, 1);
+    assert.equal((await request(mf, `/matches/${record.id}`, { cookie: member.cookie })).body.players[0].name, '牌友');
+    assert.equal((await request(mf, `/admin/users/${adminId}`, { cookie, body: { nickname: '管理者' } })).body.user.isAdmin, true);
+    assert.equal((await request(mf, '/session', { cookie })).body.user.isAdmin, true);
+    assert.equal((await register(mf, 'Yuri')).body.user.isAdmin, false);
+    ws.close();
+  } finally { await mf.dispose(); }
+});
+
+test('管理员重置密码：事务回滚、撤销全部会话和连接、解除昵称锁定及自身重新登录', async () => {
+  const mf = runtime();
+  try {
+    const { cookie, db } = await administrator(mf);
+    const member = await register(mf, '重置测试');
+    const id = member.body.user.id;
+    const another = await request(mf, '/login', { body: { nickname: '重置测试', password } });
+    const room = (await request(mf, '/rooms', { cookie: member.cookie, body: {} })).body;
+    const ws = await socket(mf, room.code, member.cookie);
+    const ws2 = await socket(mf, room.code, another.cookie);
+    const closed = Promise.all([ws, ws2].map((socket) => new Promise((resolve) => socket.addEventListener('close', resolve, { once: true }))));
+    const previousHash = (await db.one('SELECT password_hash FROM users WHERE id=?', id)).password_hash;
+    await db.one("CREATE TRIGGER prevent_reset BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'test reset failure'); END");
+    const body = { nickname: '重置后', password: 'new-password-456' };
+    assert.equal((await request(mf, `/admin/users/${id}`, { cookie, body })).status, 500);
+    assert.equal((await request(mf, '/session', { cookie: member.cookie })).body.user.nickname, '重置测试');
+    assert.equal((await db.one('SELECT password_hash FROM users WHERE id=?', id)).password_hash, previousHash);
+    assert.equal((await request(mf, `/rooms/${room.code}`, { cookie: member.cookie })).body.players[0].name, '重置测试');
+    await db.one('DROP TRIGGER prevent_reset');
+    await db.one('INSERT INTO limits VALUES (?,?,?)', 'login:重置后', 10, Date.now() + 900000);
+    assert.equal((await request(mf, `/admin/users/${id}`, { cookie, body })).status, 200);
+    let timer;
+    try {
+      // Miniflare 的双连接关闭握手最长等待约 30 秒。
+      const events = await Promise.race([closed, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('密码重置后连接未关闭')), 40000); })]);
+      for (const event of events) assert.equal(event.code, 4001);
+    } finally { clearTimeout(timer); for (const socket of [ws, ws2]) if (socket.readyState === 1) socket.close(); }
+    for (const token of [member.cookie, another.cookie]) assert.equal((await request(mf, '/session', { cookie: token })).body.user, null);
+    assert.equal((await request(mf, '/login', { body: { nickname: body.nickname, password } })).status, 401);
+    assert.equal((await request(mf, '/login', { body })).body.user.id, id);
+    assert.equal((await request(mf, '/session', { cookie })).body.user.isAdmin, true);
+    const self = await request(mf, `/admin/users/${adminId}`, { cookie, body: { password: body.password } });
+    assert.equal(self.status, 200); assert.equal(self.body.signedOut, true); assert.match(self.headers.get('Set-Cookie'), /Max-Age=0/);
+    assert.equal((await request(mf, '/admin/users', { cookie })).status, 401);
+    assert.equal((await request(mf, '/login', { body: { nickname: 'Yuri', password: body.password } })).body.user.isAdmin, true);
+  } finally { await mf.dispose(); }
+});
+
 test('Workers 账号：密码校验、唯一昵称、Cookie、跨站拒绝、记录隔离与退出', async () => {
   const mf = runtime();
   try {
@@ -51,7 +161,7 @@ test('Workers 账号：密码校验、唯一昵称、Cookie、跨站拒绝、记
     assert.equal(missing.cookie, undefined);
     const user = await register(mf, 'Test');
     assert.match(user.headers.get('Set-Cookie'), /HttpOnly; SameSite=Lax; Max-Age=2592000; Secure/);
-    assert.deepEqual(Object.keys(user.body.user).sort(), ['id', 'nickname']);
+    assert.deepEqual(Object.keys(user.body.user).sort(), ['id', 'isAdmin', 'nickname']);
     assert.equal((await request(mf, '/register', { body: { nickname: ' ｔｅｓｔ ', password } })).status, 409);
     assert.equal((await request(mf, '/login', { body: { nickname: 'Test', password: 'wrong-password' } })).status, 401);
     const login = await request(mf, '/login', { body: { nickname: 'test', password } });

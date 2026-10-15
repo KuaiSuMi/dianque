@@ -5,6 +5,7 @@
   "compatibility_date": "2026-10-15",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  "vars": { "ADMIN_USER_ID": "06dcc519-daf0-49af-8d01-3c4ca5c2032c" },
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",

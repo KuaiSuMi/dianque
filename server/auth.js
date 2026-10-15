@@ -4,12 +4,18 @@ import { check } from './game.js';
 export const SESSION_SECONDS = 30 * 24 * 60 * 60;
 export const digest = (value) => createHash('sha256').update(value).digest('hex');
 export const newToken = () => randomBytes(32).toString('hex');
-export function credentials(body) {
-  check(typeof body.nickname === 'string', '请填写昵称');
-  const nickname = body.nickname.normalize('NFKC').trim();
+export function nicknameValue(value) {
+  check(typeof value === 'string', '请填写昵称');
+  const nickname = value.normalize('NFKC').trim();
   check([...nickname].length >= 1 && [...nickname].length <= 12 && !/[\u0000-\u001f\u007f]/.test(nickname), '昵称须为 1～12 个字');
-  check(typeof body.password === 'string' && body.password.length >= 8 && body.password.length <= 128, '密码须为 8～128 位');
-  return { nickname, key: nickname.toLowerCase(), password: body.password };
+  return { nickname, key: nickname.toLowerCase() };
+}
+export function passwordValue(value) {
+  check(typeof value === 'string' && value.length >= 8 && value.length <= 128, '密码须为 8～128 位');
+  return value;
+}
+export function credentials(body) {
+  return { ...nicknameValue(body.nickname), password: passwordValue(body.password) };
 }
 export function passwordHash(password, salt = randomBytes(16).toString('hex')) {
   // OWASP 的 32 MiB 档位，成本低于 Cloudflare 原生 scrypt 的 2^20 上限。

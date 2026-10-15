@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { api } from './api';
 import { useRoom } from './useRoom';
 import { AuthForm, AccountHistory } from './account';
+import { AdminEntry, AdminUsers } from './admin';
 import { AnimatePresence, MotionConfig, motion, useIsPresent, useReducedMotion } from 'motion/react';
 import { Expanding, PageTransition, Segmented, Toggle, spring } from './ui';
 import { RON_POINTS, TSUMO_POINTS, pointPatterns, tsumoAmounts, paymentTransfers } from './payment';
@@ -75,7 +76,7 @@ function RoomRulesFields({ points, setPoints, length, setLength, count, setCount
   </>;
 }
 
-function Lobby({ user, onEnter, notify, openAccount }) {
+function Lobby({ user, onEnter, notify, openAccount, openAdmin }) {
   const [tab, setTab] = useState(initialCode ? 'join' : 'create');
   const [code, setCode] = useState(initialCode);
   const [points, setPoints] = useState(25000);
@@ -97,6 +98,7 @@ function Lobby({ user, onEnter, notify, openAccount }) {
   }
   return <main className="lobby page">
     <header className="app-header"><Logo /><button className="text-button" onClick={openAccount}><History size={17} />{user.nickname} · 我的对局</button></header>
+    <AdminEntry open={openAdmin} />
     <div className="lobby-layout">
       <section className="entry-panel"><Segmented className="entry-tabs" label="进入牌桌方式" value={tab} onChange={setTab} options={[['create', '创建牌桌'], ['join', '加入牌桌']]} />
         <motion.form key={tab} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.18 }} onSubmit={submit}>
@@ -323,7 +325,7 @@ function SettlementScoresSheet({ room, act, busy, close }) {
   </form></Sheet>;
 }
 
-function Table({ room, me, act, busy, connected, notify, home }) {
+function Table({ room, me, act, busy, connected, notify, home, openAdmin }) {
   const [sheet, setSheet] = useState(null);
   const [target, setTarget] = useState(null);
   const current = room.state;
@@ -355,6 +357,7 @@ function Table({ room, me, act, busy, connected, notify, home }) {
     try { if (document.fullscreenElement) await document.exitFullscreen(); else if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen(); else notify('可将网页添加到主屏幕，以全屏使用'); } catch { notify('请将网页添加到主屏幕，以全屏使用'); }
   }
   return <main className="table-page page"><header className="app-header"><Logo /><div className="header-room">{['waiting', 'ended'].includes(current.status) && <button className="text-button" disabled={busy} onClick={home} aria-label="退出房间" title="退出房间"><Home size={17} /></button>}<button className="text-button" onClick={() => setSheet('share')}>房间 {room.code}<Share2 size={15} /></button><span className={`network ${connected ? 'connected' : ''}`}>{connected ? <Wifi size={14} /> : <WifiOff size={14} />}<span>{connected ? '已同步' : '重连中'}</span></span></div></header>
+    <AdminEntry open={openAdmin} />
     {!connected && <div role="status" className="offline-banner">连接中断，重连前暂停操作。</div>}
     {current.status === 'settling' ? <Settlement room={room} me={me} act={act} busy={locked} edit={() => setSheet('settlement-scores')} records={() => setSheet('records')} undo={() => setSheet('undo')} redo={() => setSheet('redo')} /> : current.status !== 'playing' ? <WaitingRoom room={room} me={me} act={act} busy={locked} share={() => setSheet('share')} records={() => setSheet('records')} configure={() => setSheet('configure')} /> : <>
       <div className="table-toolbar"><div><span>{count === 3 ? '三人' : '四人'}{room.config.length === 'south' ? '南' : '东'}</span>{me.id === room.hostId && <button className="text-button end-game-button" disabled={locked || pending} onClick={() => act({ type: 'end' })}>结束对战</button>}</div><div className="history-buttons as-glass as-glass-group" data-adapt="off"><button className="as-item" aria-label="撤销上一步" title="撤销上一步" disabled={locked || !room.canUndo || pending} onClick={() => setSheet('undo')}><Undo2 size={18} /><span>撤销</span></button><button className="as-item" aria-label="重做上一步" title="重做上一步" disabled={locked || !room.canRedo || pending} onClick={() => setSheet('redo')}><Redo2 size={18} /><span>重做</span></button></div></div>
@@ -387,12 +390,13 @@ function App() {
   const [connectionError, setConnectionError] = useState('');
   const [accountOpen, setAccountOpen] = useState(false);
   const [accountRecord, setAccountRecord] = useState(null);
+  const [adminOpen, setAdminOpen] = useState(false);
   const inFlight = useRef(false);
   const notify = (text) => setMessage(text);
   function receive(next) { setRoom((previous) => !previous || previous.code !== next.code || previous.revision > next.revision ? previous : next); }
   function enter(next) { setRoom(next); setConnected(false); history.replaceState(null, '', `/?room=${next.code}`); }
   function left() { setRoom(null); setConnected(false); history.replaceState(null, '', '/'); }
-  function unauthorized() { setUser(null); setRoom(null); setAccountOpen(false); setAccountRecord(null); notify('请重新登录'); }
+  function unauthorized() { setUser(null); setRoom(null); setAccountOpen(false); setAccountRecord(null); setAdminOpen(false); notify('请重新登录'); }
   useEffect(() => { window.addEventListener('dianque:unauthorized', unauthorized); return () => window.removeEventListener('dianque:unauthorized', unauthorized); }, []);
   async function restore(session) {
     if (!session.user) { setUser(null); return; }
@@ -435,11 +439,17 @@ function App() {
     finally { setBusy(false); inFlight.current = false; }
   }
   const me = room?.players.find((p) => p.id === user?.id);
+  const openAdmin = user?.isAdmin ? () => setAdminOpen(true) : undefined;
+  function accountSaved(result) {
+    if (result.signedOut) { unauthorized(); notify('密码已重置，请使用新密码登录'); }
+    else if (result.user.id === user.id) setUser(result.user);
+  }
   if (!ready) return <main className="connecting"><Logo /><LoaderCircle className="spin" size={28} /><p>{connectionError || '正在连接…'}</p>{connectionError && <Button onClick={() => location.reload()}>重试</Button>}</main>;
   return <NoticeContext.Provider value={message}><AnimatePresence mode="wait" initial={false}><PageTransition key={!user ? 'auth' : !room ? 'lobby' : `room-${room.code}-${room.state.status === 'ended' ? 'waiting' : room.state.status}`}>
-    {!user ? <main className="lobby page"><header className="app-header"><Logo /></header><div className="lobby-layout"><AuthForm onAuth={restore} /></div></main> : room && me ? <Table room={room} me={me} act={act} busy={busy} connected={connected} notify={notify} home={home} /> : <Lobby user={user} onEnter={enter} notify={notify} openAccount={() => setAccountOpen(true)} />}
+    {!user ? <main className="lobby page"><header className="app-header"><Logo /></header><div className="lobby-layout"><AuthForm onAuth={restore} /></div></main> : room && me ? <Table room={room} me={me} act={act} busy={busy} connected={connected} notify={notify} home={home} openAdmin={openAdmin} /> : <Lobby user={user} onEnter={enter} notify={notify} openAccount={() => setAccountOpen(true)} openAdmin={openAdmin} />}
     </PageTransition></AnimatePresence>
     <AnimatePresence>{accountOpen && user && <Sheet key="account" title="我的对局" close={() => setAccountOpen(false)} wide><AccountHistory user={user} openRecord={setAccountRecord} logout={logout} /></Sheet>}{accountRecord && <Records key="account-record" record={accountRecord} close={() => setAccountRecord(null)} />}</AnimatePresence>
+    <AnimatePresence>{adminOpen && user?.isAdmin && <Sheet key="admin" title="账号管理" close={() => setAdminOpen(false)}><AdminUsers user={user} onSaved={accountSaved} /></Sheet>}</AnimatePresence>
     <AnimatePresence>{message && <motion.div key={message} className="toast as-glass as-glass-large" data-adapt="off" data-lens="off" role="status" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.16 }}>{message}<button aria-label="关闭提示" onClick={() => setMessage('')}><X size={16} /></button></motion.div>}</AnimatePresence></NoticeContext.Provider>;
 }
 

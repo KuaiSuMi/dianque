@@ -1,7 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { randomInt, randomUUID } from 'node:crypto';
 import { applyAction, check, GameError, joinRoom, leaveRoom, newRoom, publicRoom, stateOf } from './game.js';
-import { cookie, credentials, newToken, passwordHash, sessionHash, SESSION_SECONDS, verifyPassword, digest } from './auth.js';
+import { cookie, credentials, nicknameValue, passwordValue, newToken, passwordHash, sessionHash, SESSION_SECONDS, verifyPassword, digest } from './auth.js';
 
 const codePattern = /^[A-Z]{4}$/;
 const active = (room) => ['playing', 'settling'].includes(stateOf(room).status);
@@ -63,7 +63,54 @@ export class Dianque extends DurableObject {
     const hash = sessionHash(request);
     return hash ? this.one('SELECT users.*,sessions.hash AS session_hash,sessions.expires_at FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.hash=? AND sessions.expires_at>?', hash, Date.now()) : null;
   }
-  session(user) { return { user: { id: user.id, nickname: user.nickname }, activeRoom: user.active_room, lastRoom: user.last_room }; }
+  isAdmin(user) { return user.id === this.env.ADMIN_USER_ID; }
+  publicUser(user) { return { id: user.id, nickname: user.nickname, isAdmin: this.isAdmin(user) }; }
+  session(user) { return { user: this.publicUser(user), activeRoom: user.active_room, lastRoom: user.last_room }; }
+  admin(request, url, body, user) {
+    if (!this.isAdmin(user)) fail(403, '仅管理员可管理账号');
+    if (url.pathname === '/api/admin/users' && request.method === 'GET') {
+      const query = (url.searchParams.get('q') || '').normalize('NFKC').trim().toLowerCase();
+      const offset = Number(url.searchParams.get('offset') || 0);
+      check(query.length <= 128 && Number.isSafeInteger(offset) && offset >= 0, '查询条件无效');
+      const total = this.one('SELECT COUNT(*) AS n FROM users WHERE instr(nickname_key,?)>0', query).n;
+      const users = this.sql.exec('SELECT id,nickname,created_at FROM users WHERE instr(nickname_key,?)>0 ORDER BY created_at DESC,id LIMIT 20 OFFSET ?', query, offset).toArray();
+      return json({ total, users: users.map((row) => ({ ...this.publicUser(row), createdAt: row.created_at })) });
+    }
+    const route = url.pathname.match(/^\/api\/admin\/users\/([a-f0-9-]{36})$/);
+    if (!route || request.method !== 'POST') fail(404, '接口不存在');
+    const fields = Object.keys(body);
+    check(fields.length > 0 && fields.every((key) => ['nickname', 'password'].includes(key)), '仅支持修改昵称或密码');
+    const renamed = 'nickname' in body ? nicknameValue(body.nickname) : null;
+    const password = 'password' in body ? passwordValue(body.password) : null;
+    const rooms = [];
+    const updated = this.ctx.storage.transactionSync(() => {
+      const target = this.one('SELECT * FROM users WHERE id=?', route[1]);
+      if (!target) fail(404, '账号不存在');
+      this.limit(`admin:${user.id}`, 30, 3600000, '账号修改次数过多');
+      if (renamed) {
+        if (this.one('SELECT id FROM users WHERE nickname_key=? AND id<>?', renamed.key, target.id)) fail(409, '昵称已被使用');
+        this.sql.exec('UPDATE users SET nickname=?,nickname_key=? WHERE id=?', renamed.nickname, renamed.key, target.id);
+        for (const row of this.sql.exec('SELECT rooms.payload FROM members JOIN rooms ON rooms.code=members.code WHERE members.user_id=?', target.id).toArray()) {
+          const room = JSON.parse(row.payload), player = room.players.find((p) => p.id === target.id);
+          if (!player) continue;
+          player.name = renamed.nickname; room.revision++;
+          this.sql.exec('UPDATE rooms SET payload=? WHERE code=?', JSON.stringify(room), room.code);
+          rooms.push(room);
+        }
+      }
+      if (password) {
+        const { salt, hash } = passwordHash(password);
+        this.sql.exec('UPDATE users SET salt=?,password_hash=? WHERE id=?', salt, hash, target.id);
+        this.sql.exec('DELETE FROM sessions WHERE user_id=?', target.id);
+      }
+      this.sql.exec('DELETE FROM limits WHERE key=? OR key=?', `login:${target.nickname_key}`, `login:${renamed?.key || target.nickname_key}`);
+      return this.publicUser({ ...target, nickname: renamed?.nickname || target.nickname });
+    });
+    if (password) for (const ws of this.ctx.getWebSockets(updated.id)) ws.close(4001, '密码已重置，请重新登录');
+    rooms.forEach((room) => this.broadcast(room));
+    const signedOut = !!password && updated.id === user.id;
+    return json({ user: updated, signedOut }, 200, signedOut ? { 'Set-Cookie': cookie('', request, 0) } : {});
+  }
   room(code, user) {
     check(codePattern.test(code), '房间码为 4 位大写字母');
     const row = this.one('SELECT payload FROM rooms WHERE code=?', code);
@@ -82,6 +129,7 @@ export class Dianque extends DurableObject {
   broadcast(room) {
     const sockets = this.ctx.getWebSockets(room.code);
     for (const ws of sockets) {
+      if (ws.readyState !== 1) continue;
       const { sessionHash: hash, userId } = ws.deserializeAttachment();
       if (!this.one('SELECT hash FROM sessions WHERE hash=? AND expires_at>?', hash, Date.now())) ws.close(4001, '登录已过期');
       else if (!room.players.some((p) => p.id === userId)) ws.close(4002, '已退出房间');
@@ -150,6 +198,7 @@ export class Dianque extends DurableObject {
       if (path === '/api/session' && method === 'GET') return json(user ? this.session(user) : { user: null });
       if (!user) fail(401, '请先登录');
       this.limit(`request:${user.id}`, 120);
+      if (path.startsWith('/api/admin/')) return this.admin(request, url, body, user);
       if (path === '/api/logout' && method === 'POST') {
         this.sql.exec('DELETE FROM sessions WHERE hash=?', user.session_hash);
         for (const ws of this.ctx.getWebSockets()) if (ws.deserializeAttachment().sessionHash === user.session_hash) ws.close(4001, '已退出登录');
