@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, LoaderCircle, LogOut } from 'lucide-react';
+import { ArrowRight, KeyRound, LoaderCircle, LogOut } from 'lucide-react';
 import { Segmented } from './ui';
 import { api } from './api';
 
@@ -22,6 +22,36 @@ export function AuthForm({ onAuth }) {
     </form></section>;
 }
 
+export function ChangePasswordForm({ user, onChanged }) {
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  async function submit(event) {
+    event.preventDefault();
+    if (busy) return;
+    setError('');
+    if (newPassword !== confirmation) { setError('两次输入的新密码不一致'); return; }
+    if (newPassword === currentPassword) { setError('新密码不能与原密码相同'); return; }
+    setBusy(true);
+    try {
+      await api('/password', { method: 'POST', body: { currentPassword, newPassword } });
+      setCurrentPassword(''); setNewPassword(''); setConfirmation(''); onChanged();
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  }
+  return <form onSubmit={submit} aria-label="修改密码">
+    <input type="text" name="username" autoComplete="username" value={user.nickname} readOnly hidden />
+    <label>原密码<input type="password" autoComplete="current-password" required minLength={8} maxLength={128} disabled={busy} value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} autoFocus /></label>
+    <label>新密码<input type="password" autoComplete="new-password" required minLength={8} maxLength={128} disabled={busy} placeholder="8～128 位" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} /></label>
+    <label>确认新密码<input type="password" autoComplete="new-password" required minLength={8} maxLength={128} disabled={busy} value={confirmation} onChange={(e) => setConfirmation(e.target.value)} /></label>
+    <p className="field-help">修改后所有设备都会退出登录，请使用新密码重新登录。账号、座位和战绩保留。</p>
+    {error && <p role="alert" className="warning-text">{error}</p>}
+    <button className="button primary full" disabled={busy}>{busy ? <LoaderCircle size={18} className="spin" /> : <KeyRound size={18} />}修改并重新登录</button>
+  </form>;
+}
+
 function RankChart({ matches, count }) {
   const width = 600, height = 220, left = 28, right = 16, top = 18, bottom = 20;
   const x = (i) => matches.length === 1 ? width / 2 : left + i * (width - left - right) / (matches.length - 1);
@@ -33,7 +63,7 @@ function RankChart({ matches, count }) {
   </svg><div className="chart-dates"><span>较早</span><span>最近</span></div></div>;
 }
 
-export function AccountHistory({ user, openRecord, logout }) {
+export function AccountHistory({ user, openRecord, logout, changePassword }) {
   const [count, setCount] = useState(4);
   const [offset, setOffset] = useState(0);
   const [data, setData] = useState(null);
@@ -49,7 +79,7 @@ export function AccountHistory({ user, openRecord, logout }) {
     setBusy(true); setError('');
     try { openRecord(await api(`/matches/${id}`)); } catch (e) { setError(e.message); } finally { setBusy(false); }
   }
-  return <section className="account-history"><div className="account-heading"><strong>{user.nickname}</strong><button className="text-button" onClick={logout}><LogOut size={16} />退出登录</button></div>
+  return <section className="account-history"><div className="account-heading"><strong>{user.nickname}</strong><div className="account-actions"><button className="text-button" onClick={changePassword}><KeyRound size={16} />修改密码</button><button className="text-button" onClick={logout}><LogOut size={16} />退出登录</button></div></div>
     <Segmented label="统计人数" value={String(count)} onChange={(value) => { setCount(Number(value)); setOffset(0); }} options={ [['4', '四人'], ['3', '三人']] } />
     {error && <p role="alert" className="warning-text">{error}</p>}
     {!data && !error && <p className="loading-copy" role="status">正在读取对局…</p>}

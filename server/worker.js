@@ -102,6 +102,7 @@ export class Dianque extends DurableObject {
         const { salt, hash } = passwordHash(password);
         this.sql.exec('UPDATE users SET salt=?,password_hash=? WHERE id=?', salt, hash, target.id);
         this.sql.exec('DELETE FROM sessions WHERE user_id=?', target.id);
+        this.sql.exec('DELETE FROM limits WHERE key=?', `password:${target.id}`);
       }
       this.sql.exec('DELETE FROM limits WHERE key=? OR key=?', `login:${target.nickname_key}`, `login:${renamed?.key || target.nickname_key}`);
       return this.publicUser({ ...target, nickname: renamed?.nickname || target.nickname });
@@ -199,6 +200,22 @@ export class Dianque extends DurableObject {
       if (!user) fail(401, '请先登录');
       this.limit(`request:${user.id}`, 120);
       if (path.startsWith('/api/admin/')) return this.admin(request, url, body, user);
+      if (path === '/api/password' && method === 'POST') {
+        check(Object.keys(body).length === 2 && Object.keys(body).every((key) => ['currentPassword', 'newPassword'].includes(key)), '请填写原密码和新密码');
+        const currentPassword = passwordValue(body.currentPassword), newPassword = passwordValue(body.newPassword);
+        check(currentPassword !== newPassword, '新密码不能与原密码相同');
+        const response = this.ctx.storage.transactionSync(() => {
+          this.limit(`password:${user.id}`, 10, 15 * 60000, '原密码验证次数过多');
+          if (!verifyPassword(currentPassword, user)) return json({ error: '原密码不正确' }, 400);
+          const { salt, hash } = passwordHash(newPassword);
+          this.sql.exec('UPDATE users SET salt=?,password_hash=? WHERE id=?', salt, hash, user.id);
+          this.sql.exec('DELETE FROM sessions WHERE user_id=?', user.id);
+          this.sql.exec('DELETE FROM limits WHERE key=? OR key=?', `password:${user.id}`, `login:${user.nickname_key}`);
+          return json({ ok: true }, 200, { 'Set-Cookie': cookie('', request, 0) });
+        });
+        if (response.ok) for (const ws of this.ctx.getWebSockets(user.id)) ws.close(4001, '密码已修改，请重新登录');
+        return response;
+      }
       if (path === '/api/logout' && method === 'POST') {
         this.sql.exec('DELETE FROM sessions WHERE hash=?', user.session_hash);
         for (const ws of this.ctx.getWebSockets()) if (ws.deserializeAttachment().sessionHash === user.session_hash) ws.close(4001, '已退出登录');

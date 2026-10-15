@@ -52,6 +52,85 @@ function message(ws, predicate) {
   });
 }
 
+test('自行修改密码：原密码校验、请求边界、故障回滚和全部旧会话失效', async () => {
+  const mf = runtime();
+  let ws;
+  try {
+    const user = await register(mf, '改密用户');
+    const other = await register(mf, '其他用户');
+    const second = await request(mf, '/login', { body: { nickname: '改密用户', password } });
+    const body = { currentPassword: password, newPassword: 'changed-password-456' };
+    const cookie = user.cookie, id = user.body.user.id;
+    const db = (await mf.getDurableObjectNamespace('APP')).getByName('main');
+    const room = (await request(mf, '/rooms', { cookie, body: {} })).body;
+    const previousHash = (await db.one('SELECT password_hash FROM users WHERE id=?', id)).password_hash;
+    assert.equal((await request(mf, '/password', { body })).status, 401);
+    assert.equal((await request(mf, '/password', { cookie, body, headers: { Origin: 'https://evil.test' } })).status, 403);
+    for (const invalid of [{}, { ...body, userId: other.body.user.id }, { ...body, newPassword: 'short' }, { ...body, newPassword: password }]) {
+      assert.equal((await request(mf, '/password', { cookie, body: invalid })).status, 400);
+    }
+    const wrong = await request(mf, '/password', { cookie, body: { ...body, currentPassword: 'wrong-password' } });
+    assert.equal(wrong.status, 400); assert.equal(wrong.body.error, '原密码不正确'); assert.equal(wrong.cookie, undefined);
+    assert.equal((await request(mf, '/session', { cookie })).body.user.id, id);
+    assert.equal((await db.one('SELECT count FROM limits WHERE key=?', `password:${id}`)).count, 1);
+    await db.one("CREATE TRIGGER prevent_change BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'test change failure'); END");
+    assert.equal((await request(mf, '/password', { cookie, body })).status, 500);
+    assert.equal((await db.one('SELECT password_hash FROM users WHERE id=?', id)).password_hash, previousHash);
+    assert.equal((await db.one('SELECT count FROM limits WHERE key=?', `password:${id}`)).count, 1);
+    assert.equal((await request(mf, '/session', { cookie: second.cookie })).body.user.id, id);
+    await db.one('DROP TRIGGER prevent_change');
+    await db.one('INSERT INTO limits VALUES (?,?,?)', 'login:改密用户', 10, Date.now() + 900000);
+    ws = await socket(mf, room.code, cookie);
+    let timer;
+    const closed = new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('改密后连接未关闭')), 40000);
+      ws.addEventListener('close', resolve, { once: true });
+    });
+    try {
+      const updated = await request(mf, '/password', { cookie, body });
+      assert.equal(updated.status, 200); assert.deepEqual(updated.body, { ok: true });
+      assert.match(updated.headers.get('Set-Cookie'), /Max-Age=0/);
+      assert.equal((await closed).code, 4001);
+    } finally { clearTimeout(timer); }
+    for (const old of [cookie, second.cookie]) assert.equal((await request(mf, '/session', { cookie: old })).body.user, null);
+    assert.equal((await request(mf, '/session', { cookie: other.cookie })).body.user.id, other.body.user.id);
+    assert.equal((await request(mf, '/login', { body: { nickname: '改密用户', password } })).status, 401);
+    const login = await request(mf, '/login', { body: { nickname: '改密用户', password: body.newPassword } });
+    assert.equal(login.status, 200); assert.equal(login.body.user.id, id); assert.equal(login.body.lastRoom, room.code);
+    assert.equal((await request(mf, `/rooms/${room.code}`, { cookie: login.cookie })).body.players[0].id, id);
+  } finally { if (ws?.readyState === 1) ws.close(); await mf.dispose(); }
+});
+
+test('自行修改密码：原密码错误按账号限流，正确请求不能绕过限额，到期恢复', async () => {
+  const mf = runtime();
+  try {
+    const user = await register(mf, '改密限流');
+    const cookie = user.cookie, key = `password:${user.body.user.id}`;
+    const db = (await mf.getDurableObjectNamespace('APP')).getByName('main');
+    const body = { currentPassword: 'wrong-password', newPassword: 'changed-password-456' };
+    for (let i = 0; i < 10; i++) assert.equal((await request(mf, '/password', { cookie, body })).status, 400);
+    const limited = await request(mf, '/password', { cookie, body: { ...body, currentPassword: password } });
+    assert.equal(limited.status, 429); assert.ok(Number(limited.headers.get('Retry-After')) > 0);
+    assert.equal((await request(mf, '/session', { cookie })).body.user.id, user.body.user.id);
+    await db.one('UPDATE limits SET until=? WHERE key=?', Date.now() - 1, key);
+    assert.equal((await request(mf, '/password', { cookie, body: { ...body, currentPassword: password } })).status, 200);
+    assert.equal(await db.one('SELECT count FROM limits WHERE key=?', key), undefined);
+  } finally { await mf.dispose(); }
+});
+
+test('自行修改密码：并发提交只有一次成功，已撤销的会话不能覆盖新密码', async () => {
+  const mf = runtime();
+  try {
+    const user = await register(mf, '并发改密');
+    const passwords = ['changed-password-456', 'changed-password-789'];
+    const results = await Promise.all(passwords.map((newPassword) => request(mf, '/password', { cookie: user.cookie, body: { currentPassword: password, newPassword } })));
+    assert.deepEqual(results.map((r) => r.status).sort(), [200, 401]);
+    for (let i = 0; i < results.length; i++) {
+      assert.equal((await request(mf, '/login', { body: { nickname: '并发改密', password: passwords[i] } })).status, results[i].status === 200 ? 200 : 401);
+    }
+  } finally { await mf.dispose(); }
+});
+
 test('管理员：服务端权限、字段白名单、用户查询分页与输入校验', async () => {
   const mf = runtime();
   try {
@@ -133,7 +212,9 @@ test('管理员重置密码：事务回滚、撤销全部会话和连接、解�
     assert.equal((await request(mf, `/rooms/${room.code}`, { cookie: member.cookie })).body.players[0].name, '重置测试');
     await db.one('DROP TRIGGER prevent_reset');
     await db.one('INSERT INTO limits VALUES (?,?,?)', 'login:重置后', 10, Date.now() + 900000);
+    await db.one('INSERT INTO limits VALUES (?,?,?)', `password:${id}`, 10, Date.now() + 900000);
     assert.equal((await request(mf, `/admin/users/${id}`, { cookie, body })).status, 200);
+    assert.equal(await db.one('SELECT count FROM limits WHERE key=?', `password:${id}`), undefined);
     let timer;
     try {
       // Miniflare 的双连接关闭握手最长等待约 30 秒。

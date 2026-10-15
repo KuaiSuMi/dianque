@@ -415,7 +415,8 @@ input:focus, select:focus {border-color:var(--mint);
 .auth-panel h1 { font-size:26px; letter-spacing:-.6px; margin-bottom:26px; }
 .recent-rooms { width:100%; max-width:460px; margin:32px auto 0; }
 .recent-rooms h2 { font-size:15px; margin-bottom:8px; color:var(--muted); font-weight:500; }
-.account-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:18px; }
+.account-heading { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:16px; margin-bottom:18px; }
+.account-actions { display:flex; flex-wrap:wrap; gap:16px; }
 .account-heading > strong { font-size:18px; overflow-wrap:anywhere; }
 .account-stats { display:grid; grid-template-columns:1fr 1fr; gap:20px; padding:28px 0; }
 .account-stats span { display:block; font-size:12px; color:var(--muted); margin-bottom:8px; }

@@ -2,7 +2,7 @@ import React, { createContext, useContext, useEffect, useId, useLayoutEffect, us
 import { createRoot } from 'react-dom/client';
 import { api } from './api';
 import { useRoom } from './useRoom';
-import { AuthForm, AccountHistory } from './account';
+import { AuthForm, AccountHistory, ChangePasswordForm } from './account';
 import { AdminEntry, AdminUsers } from './admin';
 import { AnimatePresence, MotionConfig, motion, useIsPresent, useReducedMotion } from 'motion/react';
 import { Expanding, PageTransition, Segmented, Toggle, spring } from './ui';
@@ -121,7 +121,7 @@ function ShareSheet({ room, close, notify }) {
   return <Sheet title="邀请牌友入座" close={close}><div className="share-content">{qr && <img src={qr} alt={`房间 ${room.code} 的加入二维码`} width="220" height="220" />}<strong className="room-code-big">{room.code}</strong><small>按{room.config.playerCount === 3 ? '东南西' : '东南西北'}顺序入座</small></div><label>邀请地址<input id="room-url" value={url} readOnly onFocus={(e) => e.target.select()} /></label><Button className="primary full" icon={Copy} onClick={copy}>复制邀请地址</Button>{['localhost', '127.0.0.1'].includes(location.hostname) && <p className="warning-text">当前是本机地址。请用启动终端显示的局域网 IP 打开，再邀请其他手机。</p>}</Sheet>;
 }
 
-function WaitingRoom({ room, me, act, busy, share, records, configure }) {
+function WaitingRoom({ room, me, act, busy, share, records, configure, changePassword }) {
   const ended = room.state.status === 'ended';
   const count = room.config.playerCount;
   const reduce = useReducedMotion();
@@ -130,7 +130,7 @@ function WaitingRoom({ room, me, act, busy, share, records, configure }) {
     <div className="waiting-heading"><h1>{room.players.length < count ? '等待入座' : '房间大厅'}</h1><p>房间 <strong>{room.code}</strong> · {count === 3 ? '三人' : '四人'}{room.config.length === 'south' ? '南' : '东'} · {fmt(room.config.startPoints)} 点起{ended && <><br />本场已结束</>}</p></div>
     <div className={`seats-list seats-${count}`}>{Array.from({ length: count }, (_, seat) => { const p = room.players[seat]; return <motion.div layout={reduce ? false : 'position'} transition={{ layout: { duration: 0.28, ease: [0.77, 0, 0.175, 1] } }} className={`waiting-seat ${p ? 'taken' : ''}`} key={p?.id || `empty-${seat}`}><span className={`wind-chip ${seat === room.config.startDealer ? 'dealer' : ''}`}>{WINDS[(seat - room.config.startDealer + count) % count]}</span>{p && <Avatar player={p} large />}<strong>{p?.name || '空位'}{p?.id === room.hostId && <span className="host-badge">房主</span>}</strong><small>{p ? `${p.id === me.id ? '你 · ' : ''}${p.seat === room.config.startDealer ? '起庄 · ' : ''}${p.online ? '已连接' : '未连接'}` : ''}</small></motion.div>; })}</div>
     <div className="waiting-actions">{room.players.length < count && <Button icon={Share2} onClick={share}>邀请牌友 · {room.players.length}/{count}</Button>}{me.id === room.hostId ? <><Button disabled={busy || room.players.length < count} onClick={async () => { if (await act({ type: 'shuffle' })) setShuffles((n) => n + 1); }}><motion.span className="shuffle-icon" aria-hidden="true" animate={{ transform: reduce ? 'none' : `rotate(${shuffles * 180}deg)` }} transition={{ duration: 0.25, ease: [0.23, 1, 0.32, 1] }}><Shuffle size={18} /></motion.span>随机选座</Button><Button className="primary" loading={busy} disabled={busy || room.players.length < count} onClick={() => act({ type: 'start' })} icon={ArrowRight}>开始对局</Button></> : <p>等待房主开始对局</p>}</div>
-    <div className="waiting-tools"><button className="text-button" onClick={records}><History size={17} />对战记录</button>{me.id === room.hostId && <button className="text-button" disabled={busy} onClick={configure}><Info size={17} />房间设置</button>}</div>
+    <div className="waiting-tools"><button className="text-button" onClick={records}><History size={17} />对战记录</button>{me.id === room.hostId && <button className="text-button" disabled={busy} onClick={configure}><Info size={17} />房间设置</button>}<button className="text-button" onClick={changePassword}>修改密码</button></div>
   </section>;
 }
 
@@ -325,7 +325,7 @@ function SettlementScoresSheet({ room, act, busy, close }) {
   </form></Sheet>;
 }
 
-function Table({ room, me, act, busy, connected, notify, home, openAdmin }) {
+function Table({ room, me, act, busy, connected, notify, home, openAdmin, changePassword }) {
   const [sheet, setSheet] = useState(null);
   const [target, setTarget] = useState(null);
   const current = room.state;
@@ -359,7 +359,7 @@ function Table({ room, me, act, busy, connected, notify, home, openAdmin }) {
   return <main className="table-page page"><header className="app-header"><Logo /><div className="header-room">{['waiting', 'ended'].includes(current.status) && <button className="text-button" disabled={busy} onClick={home} aria-label="退出房间" title="退出房间"><Home size={17} /></button>}<button className="text-button" onClick={() => setSheet('share')}>房间 {room.code}<Share2 size={15} /></button><span className={`network ${connected ? 'connected' : ''}`}>{connected ? <Wifi size={14} /> : <WifiOff size={14} />}<span>{connected ? '已同步' : '重连中'}</span></span></div></header>
     <AdminEntry open={openAdmin} />
     {!connected && <div role="status" className="offline-banner">连接中断，重连前暂停操作。</div>}
-    {current.status === 'settling' ? <Settlement room={room} me={me} act={act} busy={locked} edit={() => setSheet('settlement-scores')} records={() => setSheet('records')} undo={() => setSheet('undo')} redo={() => setSheet('redo')} /> : current.status !== 'playing' ? <WaitingRoom room={room} me={me} act={act} busy={locked} share={() => setSheet('share')} records={() => setSheet('records')} configure={() => setSheet('configure')} /> : <>
+    {current.status === 'settling' ? <Settlement room={room} me={me} act={act} busy={locked} edit={() => setSheet('settlement-scores')} records={() => setSheet('records')} undo={() => setSheet('undo')} redo={() => setSheet('redo')} /> : current.status !== 'playing' ? <WaitingRoom room={room} me={me} act={act} busy={locked} share={() => setSheet('share')} records={() => setSheet('records')} configure={() => setSheet('configure')} changePassword={changePassword} /> : <>
       <div className="table-toolbar"><div><span>{count === 3 ? '三人' : '四人'}{room.config.length === 'south' ? '南' : '东'}</span>{me.id === room.hostId && <button className="text-button end-game-button" disabled={locked || pending} onClick={() => act({ type: 'end' })}>结束对战</button>}</div><div className="history-buttons as-glass as-glass-group" data-adapt="off"><button className="as-item" aria-label="撤销上一步" title="撤销上一步" disabled={locked || !room.canUndo || pending} onClick={() => setSheet('undo')}><Undo2 size={18} /><span>撤销</span></button><button className="as-item" aria-label="重做上一步" title="重做上一步" disabled={locked || !room.canRedo || pending} onClick={() => setSheet('redo')}><Redo2 size={18} /><span>重做</span></button></div></div>
       {(room.pending || Object.keys(room.drawVotes).length > 0) && <button className="pending-alert" onClick={() => setSheet(room.pending ? 'pending' : 'draw')}><span><ArrowDownLeft size={17} />{room.pending ? '待确认支付' : `流局确认 ${Object.keys(room.drawVotes).length}/${count}`}</span><span>查看<ChevronRight size={16} /></span></button>}
       <div className="play-layout"><div className="main-console"><div className="round-strip"><div className="round-title"><span>{WINDS[Math.floor(current.hand / count) % 4]}</span><strong>{current.hand % count + 1}<small>局</small></strong></div><div className="round-counter"><span>本场</span><strong>{current.honba}<small>本</small></strong></div><div className="round-counter"><span><RiichiStick small />供托</span><strong>{current.pot}<small>根</small></strong></div></div>
@@ -375,7 +375,7 @@ function Table({ room, me, act, busy, connected, notify, home, openAdmin }) {
     {sheet === 'configure' && me.id === room.hostId && <RoomConfigSheet key="configure" room={room} act={act} busy={locked} close={close} />}
     {sheet === 'adjust' && me.id === room.hostId && <RoundSettingsSheet key="adjust" room={room} act={act} busy={locked || pending} close={close} />}
     {sheet === 'settlement-scores' && me.id === room.hostId && current.status === 'settling' && <SettlementScoresSheet key="settlement-scores" room={room} act={act} busy={locked} close={close} />}
-    {sheet === 'settings' && <Sheet key="settings" title="牌桌设置" close={close}>{me.id === room.hostId && <Button className="full" disabled={locked || pending} onClick={() => setSheet('adjust')}>修改当前场况<ChevronRight size={17} /></Button>}{pending && me.id === room.hostId && <p className="field-help">先完成或取消当前结算，再修改场况。</p>}<div className="settings-row"><span>保持屏幕常亮<small>{'wakeLock' in navigator ? '前台显示时生效' : '需要 HTTPS 与支持的浏览器'}</small></span><Toggle label="保持屏幕常亮" checked={wake} disabled={!('wakeLock' in navigator)} onChange={setWake} /></div><details className="rules"><summary>规则与使用说明</summary><p>庄家和牌或流局听牌连庄。本场随连庄或流局增加，子家和牌后清零。多家和牌的供托交给放铳者下家方向最近的和牌者。</p><p>三人模式采用自摸损，两家按原档支付，本场每家加 100 点；流局罚符共 2,000 点。</p><p>不自动判断终场、飞人或止庄；对战结束后由房主点击结束。对局中不能离开牌桌或加入其他房间。</p><p>登录同一账号即可恢复原座位。结束并确认结算后，成绩会保存到个人对局记录。</p><p>安装：在 HTTPS 地址打开，Android 使用浏览器“安装”，iPhone 使用 Safari“分享 → 添加到主屏幕”。局域网 HTTP 可直接记分。</p></details></Sheet>}</AnimatePresence>
+    {sheet === 'settings' && <Sheet key="settings" title="牌桌设置" close={close}>{me.id === room.hostId && <Button className="full" disabled={locked || pending} onClick={() => setSheet('adjust')}>修改当前场况<ChevronRight size={17} /></Button>}{pending && me.id === room.hostId && <p className="field-help">先完成或取消当前结算，再修改场况。</p>}<Button className="full" onClick={changePassword}>修改密码</Button><div className="settings-row"><span>保持屏幕常亮<small>{'wakeLock' in navigator ? '前台显示时生效' : '需要 HTTPS 与支持的浏览器'}</small></span><Toggle label="保持屏幕常亮" checked={wake} disabled={!('wakeLock' in navigator)} onChange={setWake} /></div><details className="rules"><summary>规则与使用说明</summary><p>庄家和牌或流局听牌连庄。本场随连庄或流局增加，子家和牌后清零。多家和牌的供托交给放铳者下家方向最近的和牌者。</p><p>三人模式采用自摸损，两家按原档支付，本场每家加 100 点；流局罚符共 2,000 点。</p><p>不自动判断终场、飞人或止庄；对战结束后由房主点击结束。对局中不能离开牌桌或加入其他房间。</p><p>登录同一账号即可恢复原座位。结束并确认结算后，成绩会保存到个人对局记录。</p><p>安装：在 HTTPS 地址打开，Android 使用浏览器“安装”，iPhone 使用 Safari“分享 → 添加到主屏幕”。局域网 HTTP 可直接记分。</p></details></Sheet>}</AnimatePresence>
   </main>;
 }
 
@@ -391,12 +391,13 @@ function App() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [accountRecord, setAccountRecord] = useState(null);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const inFlight = useRef(false);
   const notify = (text) => setMessage(text);
   function receive(next) { setRoom((previous) => !previous || previous.code !== next.code || previous.revision > next.revision ? previous : next); }
   function enter(next) { setRoom(next); setConnected(false); history.replaceState(null, '', `/?room=${next.code}`); }
   function left() { setRoom(null); setConnected(false); history.replaceState(null, '', '/'); }
-  function unauthorized() { setUser(null); setRoom(null); setAccountOpen(false); setAccountRecord(null); setAdminOpen(false); notify('请重新登录'); }
+  function unauthorized() { setUser(null); setRoom(null); setAccountOpen(false); setAccountRecord(null); setAdminOpen(false); setPasswordOpen(false); notify('请重新登录'); }
   useEffect(() => { window.addEventListener('dianque:unauthorized', unauthorized); return () => window.removeEventListener('dianque:unauthorized', unauthorized); }, []);
   async function restore(session) {
     if (!session.user) { setUser(null); return; }
@@ -446,10 +447,11 @@ function App() {
   }
   if (!ready) return <main className="connecting"><Logo /><LoaderCircle className="spin" size={28} /><p>{connectionError || '正在连接…'}</p>{connectionError && <Button onClick={() => location.reload()}>重试</Button>}</main>;
   return <NoticeContext.Provider value={message}><AnimatePresence mode="wait" initial={false}><PageTransition key={!user ? 'auth' : !room ? 'lobby' : `room-${room.code}-${room.state.status === 'ended' ? 'waiting' : room.state.status}`}>
-    {!user ? <main className="lobby page"><header className="app-header"><Logo /></header><div className="lobby-layout"><AuthForm onAuth={restore} /></div></main> : room && me ? <Table room={room} me={me} act={act} busy={busy} connected={connected} notify={notify} home={home} openAdmin={openAdmin} /> : <Lobby user={user} onEnter={enter} notify={notify} openAccount={() => setAccountOpen(true)} openAdmin={openAdmin} />}
+    {!user ? <main className="lobby page"><header className="app-header"><Logo /></header><div className="lobby-layout"><AuthForm onAuth={restore} /></div></main> : room && me ? <Table room={room} me={me} act={act} busy={busy} connected={connected} notify={notify} home={home} openAdmin={openAdmin} changePassword={() => setPasswordOpen(true)} /> : <Lobby user={user} onEnter={enter} notify={notify} openAccount={() => setAccountOpen(true)} openAdmin={openAdmin} />}
     </PageTransition></AnimatePresence>
-    <AnimatePresence>{accountOpen && user && <Sheet key="account" title="我的对局" close={() => setAccountOpen(false)} wide><AccountHistory user={user} openRecord={setAccountRecord} logout={logout} /></Sheet>}{accountRecord && <Records key="account-record" record={accountRecord} close={() => setAccountRecord(null)} />}</AnimatePresence>
+    <AnimatePresence>{accountOpen && user && <Sheet key="account" title="我的对局" close={() => setAccountOpen(false)} wide><AccountHistory user={user} openRecord={setAccountRecord} logout={logout} changePassword={() => setPasswordOpen(true)} /></Sheet>}{accountRecord && <Records key="account-record" record={accountRecord} close={() => setAccountRecord(null)} />}</AnimatePresence>
     <AnimatePresence>{adminOpen && user?.isAdmin && <Sheet key="admin" title="账号管理" close={() => setAdminOpen(false)}><AdminUsers user={user} onSaved={accountSaved} /></Sheet>}</AnimatePresence>
+    <AnimatePresence>{passwordOpen && user && <Sheet key="password" title="修改密码" close={() => setPasswordOpen(false)}><ChangePasswordForm user={user} onChanged={() => { unauthorized(); notify('密码已修改，请使用新密码登录'); }} /></Sheet>}</AnimatePresence>
     <AnimatePresence>{message && <motion.div key={message} className="toast as-glass as-glass-large" data-adapt="off" data-lens="off" role="status" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.16 }}>{message}<button aria-label="关闭提示" onClick={() => setMessage('')}><X size={16} /></button></motion.div>}</AnimatePresence></NoticeContext.Provider>;
 }
 
