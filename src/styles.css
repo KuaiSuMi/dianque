@@ -9,6 +9,7 @@ button { cursor: pointer; -webkit-user-select: none; user-select: none; -webkit-
 button { transition: background 140ms ease-out, color 140ms ease-out, transform 140ms ease-out; }
 button:active:not(:disabled) {transform:scale(.97); }
 button:disabled { opacity: .42; cursor: not-allowed; }
+button:disabled[aria-busy="true"] { opacity: 1; cursor: wait; }
 button, input, select { -webkit-appearance: none; }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {outline:3px solid var(--as-blue);outline-offset:3px; }
 ::selection { color: var(--bg); background: var(--mint); }
@@ -491,8 +492,6 @@ input:focus, select:focus {border-color:var(--mint);
 .die .pip { background:var(--mint); }
 @keyframes dice-roll {
   0% { transform:translateY(-18px) rotateX(var(--roll-x)) rotateY(var(--roll-y)) rotateZ(-24deg); }
-  70% { transform:translateY(-6px) rotateX(52deg) rotateY(46deg) rotateZ(12deg); }
-  85% { transform:translateY(0) rotateX(-8deg) rotateY(-8deg) rotateZ(-5deg); }
   100% { transform:translateY(0) rotateX(0deg) rotateY(0deg) rotateZ(0deg); }
 }
 @media (prefers-reduced-motion:reduce) { .die-tumble { animation:dice-fade 150ms ease both; } }

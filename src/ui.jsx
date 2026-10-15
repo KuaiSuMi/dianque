@@ -69,12 +69,12 @@ export function Segmented({ label, value, onChange, options, className = '' }) {
   </div>;
 }
 
-export function Toggle({ label, checked, disabled, onChange }) {
+export function Toggle({ label, checked, disabled, busy = false, onChange }) {
   const ref = useRef(null);
   const handler = useRef(onChange);
   const value = useRef(checked);
   value.current = checked;
-  handler.current = (next) => { if (!disabled) onChange(next); };
+  handler.current = (next) => { if (!disabled && !busy) onChange(next); };
   useEffect(() => {
     const el = ref.current;
     window.LiquidGlass.toggle(el);
@@ -87,5 +87,5 @@ export function Toggle({ label, checked, disabled, onChange }) {
     el.addEventListener('change', change);
     return () => el.removeEventListener('change', change);
   }, []);
-  return <button ref={ref} type="button" className="as-toggle" role="switch" aria-label={label} aria-checked={checked} disabled={disabled}><span className="as-knob" /></button>;
+  return <button ref={ref} type="button" className="as-toggle" role="switch" aria-label={label} aria-checked={checked} disabled={disabled || busy} aria-busy={busy || undefined}><span className="as-knob" /></button>;
 }
