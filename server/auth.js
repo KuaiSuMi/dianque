@@ -18,7 +18,7 @@ export function credentials(body) {
   return { ...nicknameValue(body.nickname), password: passwordValue(body.password) };
 }
 export function passwordHash(password, salt = randomBytes(16).toString('hex')) {
-  // OWASP 的 32 MiB 档位，成本低于 Cloudflare 原生 scrypt 的 2^20 上限。
+  // 使用 scrypt 的 32 MiB 档位，避免小内存实例因密码校验耗尽内存。
   return { salt, hash: scryptSync(password, Buffer.from(salt, 'hex'), 32, { N: 32768, r: 8, p: 3, maxmem: 64 * 1024 * 1024 }).toString('hex') };
 }
 export function verifyPassword(password, user) {

@@ -1,27 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { Miniflare } from 'miniflare';
+import WebSocket from 'ws';
+import { createApp } from '../server/index.js';
 
-const contents = await readFile('.impeccable/tmp/worker/worker.js', 'utf8');
 const origin = 'https://dianque.test';
 const password = 'test-password-123';
 const adminId = '00000000-0000-4000-8000-000000000001';
-function runtime(path) {
-  return new Miniflare({ resourcePersistencePath: path, workers: [{ config: {
-    name: 'dianque', compatibilityDate: '2026-10-15', compatibilityFlags: ['nodejs_compat'],
-    manifest: { mainModule: 'worker.js', modules: { 'worker.js': { type: 'esm', contents } } },
-    env: { APP: { type: 'durable-object', worker: 'dianque', exportName: 'Dianque' }, ADMIN_USER_ID: { type: 'text', value: adminId } },
-    exports: { Dianque: { type: 'durable-object', storage: 'sqlite' } }
-  } }] });
+async function runtime(path) {
+  const instance = await createApp({ database: path ? join(path, 'dianque.sqlite') : ':memory:', adminId, publicOrigin: origin });
+  await new Promise((resolve) => instance.server.listen(0, '127.0.0.1', resolve));
+  instance.url = `http://127.0.0.1:${instance.server.address().port}`;
+  return instance;
 }
 async function request(mf, path, { cookie, body, method = body ? 'POST' : 'GET', headers = {} } = {}) {
-  // workerd 拒绝跨站请求时不读取正文，避免测试客户端复用已被关闭的连接。
-  if (headers.Origin && headers.Origin !== origin) headers = { ...headers, Connection: 'close' };
-  const response = await mf.dispatchFetch(origin + '/api' + path, { method, headers: { Origin: origin, 'CF-Connecting-IP': '192.0.2.1', ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined }).catch((error) => { console.error(path, error.cause); throw error; });
+  const response = await fetch(mf.url + '/api' + path, { method, headers: { Origin: origin, 'X-Forwarded-For': '192.0.2.1', ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
   return { status: response.status, body: await response.json(), cookie: response.headers.get('Set-Cookie')?.split(';')[0], headers: response.headers };
 }
 async function register(mf, nickname) {
@@ -32,16 +28,14 @@ async function register(mf, nickname) {
 async function administrator(mf) {
   const user = await register(mf, 'TestAdmin');
   assert.equal(user.body.user.isAdmin, false, '昵称不能自动获得管理员权限');
-  const db = (await mf.getDurableObjectNamespace('APP')).getByName('main');
+  const db = mf.app;
   await db.one('UPDATE users SET id=? WHERE id=?', adminId, user.body.user.id);
   await db.one('UPDATE sessions SET user_id=? WHERE user_id=?', adminId, user.body.user.id);
   return { cookie: user.cookie, db };
 }
 async function socket(mf, code, cookie) {
-  const response = await mf.dispatchFetch(`${origin}/api/rooms/${code}/socket`, { headers: { Origin: origin, Cookie: cookie, Upgrade: 'websocket' } });
-  assert.equal(response.status, 101);
-  const ws = response.webSocket; ws.accept();
-  ws.addEventListener('close', () => { try { ws.close(); } catch {} });
+  const ws = new WebSocket(`${mf.url.replace(/^http/, 'ws')}/api/rooms/${code}/socket`, { headers: { Origin: origin, Cookie: cookie } });
+  await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
   return ws;
 }
 function message(ws, predicate) {
@@ -53,7 +47,7 @@ function message(ws, predicate) {
 }
 
 test('自行修改密码：原密码校验、请求边界、故障回滚和全部旧会话失效', async () => {
-  const mf = runtime();
+  const mf = await runtime();
   let ws;
   try {
     const user = await register(mf, '改密用户');
@@ -61,7 +55,7 @@ test('自行修改密码：原密码校验、请求边界、故障回滚和全�
     const second = await request(mf, '/login', { body: { nickname: '改密用户', password } });
     const body = { currentPassword: password, newPassword: 'changed-password-456' };
     const cookie = user.cookie, id = user.body.user.id;
-    const db = (await mf.getDurableObjectNamespace('APP')).getByName('main');
+    const db = mf.app;
     const room = (await request(mf, '/rooms', { cookie, body: {} })).body;
     const previousHash = (await db.one('SELECT password_hash FROM users WHERE id=?', id)).password_hash;
     assert.equal((await request(mf, '/password', { body })).status, 401);
@@ -83,7 +77,7 @@ test('自行修改密码：原密码校验、请求边界、故障回滚和全�
     ws = await socket(mf, room.code, cookie);
     let timer;
     const closed = new Promise((resolve, reject) => {
-      timer = setTimeout(() => reject(new Error('改密后连接未关闭')), 40000);
+      timer = setTimeout(() => reject(new Error('改密后连接未关闭')), 4000);
       ws.addEventListener('close', resolve, { once: true });
     });
     try {
@@ -98,15 +92,15 @@ test('自行修改密码：原密码校验、请求边界、故障回滚和全�
     const login = await request(mf, '/login', { body: { nickname: '改密用户', password: body.newPassword } });
     assert.equal(login.status, 200); assert.equal(login.body.user.id, id); assert.equal(login.body.lastRoom, room.code);
     assert.equal((await request(mf, `/rooms/${room.code}`, { cookie: login.cookie })).body.players[0].id, id);
-  } finally { if (ws?.readyState === 1) ws.close(); await mf.dispose(); }
+  } finally { if (ws?.readyState === 1) ws.close(); await mf.close(); }
 });
 
 test('自行修改密码：原密码错误按账号限流，正确请求不能绕过限额，到期恢复', async () => {
-  const mf = runtime();
+  const mf = await runtime();
   try {
     const user = await register(mf, '改密限流');
     const cookie = user.cookie, key = `password:${user.body.user.id}`;
-    const db = (await mf.getDurableObjectNamespace('APP')).getByName('main');
+    const db = mf.app;
     const body = { currentPassword: 'wrong-password', newPassword: 'changed-password-456' };
     for (let i = 0; i < 10; i++) assert.equal((await request(mf, '/password', { cookie, body })).status, 400);
     const limited = await request(mf, '/password', { cookie, body: { ...body, currentPassword: password } });
@@ -115,11 +109,11 @@ test('自行修改密码：原密码错误按账号限流，正确请求不能�
     await db.one('UPDATE limits SET until=? WHERE key=?', Date.now() - 1, key);
     assert.equal((await request(mf, '/password', { cookie, body: { ...body, currentPassword: password } })).status, 200);
     assert.equal(await db.one('SELECT count FROM limits WHERE key=?', key), undefined);
-  } finally { await mf.dispose(); }
+  } finally { await mf.close(); }
 });
 
 test('自行修改密码：并发提交只有一次成功，已撤销的会话不能覆盖新密码', async () => {
-  const mf = runtime();
+  const mf = await runtime();
   try {
     const user = await register(mf, '并发改密');
     const passwords = ['changed-password-456', 'changed-password-789'];
@@ -128,11 +122,11 @@ test('自行修改密码：并发提交只有一次成功，已撤销的会话�
     for (let i = 0; i < results.length; i++) {
       assert.equal((await request(mf, '/login', { body: { nickname: '并发改密', password: passwords[i] } })).status, results[i].status === 200 ? 200 : 401);
     }
-  } finally { await mf.dispose(); }
+  } finally { await mf.close(); }
 });
 
 test('管理员：服务端权限、字段白名单、用户查询分页与输入校验', async () => {
-  const mf = runtime();
+  const mf = await runtime();
   try {
     const { cookie, db } = await administrator(mf);
     const member = await register(mf, '普通用户');
@@ -160,11 +154,11 @@ test('管理员：服务端权限、字段白名单、用户查询分页与输�
     await db.one('INSERT INTO limits VALUES (?,?,?)', `admin:${adminId}`, 30, Date.now() + 3600000);
     assert.equal((await request(mf, target, { cookie, body: { nickname: '限额' } })).status, 429);
     assert.equal((await request(mf, '/session', { cookie: member.cookie })).body.user.nickname, '普通用户');
-  } finally { await mf.dispose(); }
+  } finally { await mf.close(); }
 });
 
 test('管理员改名：保留账号、密码和战绩，房间实时同步，管理员不随昵称转移', async () => {
-  const mf = runtime();
+  const mf = await runtime();
   try {
     const { cookie, db } = await administrator(mf);
     const member = await register(mf, '牌友');
@@ -173,7 +167,7 @@ test('管理员改名：保留账号、密码和战绩，房间实时同步，�
     const oldHash = (await db.one('SELECT password_hash FROM users WHERE id=?', id)).password_hash;
     const record = { id: randomUUID(), players: [{ id, name: '牌友', seat: 0 }] };
     await db.one('INSERT INTO matches VALUES (?,?,?,?,?,?)', record.id, room.code, new Date().toISOString(), 4, 'south', JSON.stringify(record));
-    await db.one('INSERT INTO results VALUES (?,?,?,?)', record.id, id, 1, 40000);
+    await db.one('INSERT INTO results VALUES (?,?,?,?)', record.id, id, 1, 4000);
     const ws = await socket(mf, room.code, member.cookie);
     const renamed = message(ws, (value) => value.players?.[0].name === '新牌友');
     const update = await request(mf, `/admin/users/${id}`, { cookie, body: { nickname: ' 新牌友 ' } });
@@ -189,11 +183,11 @@ test('管理员改名：保留账号、密码和战绩，房间实时同步，�
     assert.equal((await request(mf, '/session', { cookie })).body.user.isAdmin, true);
     assert.equal((await register(mf, 'TestAdmin')).body.user.isAdmin, false);
     ws.close();
-  } finally { await mf.dispose(); }
+  } finally { await mf.close(); }
 });
 
 test('管理员重置密码：事务回滚、撤销全部会话和连接、解除昵称锁定及自身重新登录', async () => {
-  const mf = runtime();
+  const mf = await runtime();
   try {
     const { cookie, db } = await administrator(mf);
     const member = await register(mf, '重置测试');
@@ -217,8 +211,7 @@ test('管理员重置密码：事务回滚、撤销全部会话和连接、解�
     assert.equal(await db.one('SELECT count FROM limits WHERE key=?', `password:${id}`), undefined);
     let timer;
     try {
-      // Miniflare 的双连接关闭握手最长等待约 30 秒。
-      const events = await Promise.race([closed, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('密码重置后连接未关闭')), 40000); })]);
+      const events = await Promise.race([closed, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('密码重置后连接未关闭')), 4000); })]);
       for (const event of events) assert.equal(event.code, 4001);
     } finally { clearTimeout(timer); for (const socket of [ws, ws2]) if (socket.readyState === 1) socket.close(); }
     for (const token of [member.cookie, another.cookie]) assert.equal((await request(mf, '/session', { cookie: token })).body.user, null);
@@ -229,11 +222,11 @@ test('管理员重置密码：事务回滚、撤销全部会话和连接、解�
     assert.equal(self.status, 200); assert.equal(self.body.signedOut, true); assert.match(self.headers.get('Set-Cookie'), /Max-Age=0/);
     assert.equal((await request(mf, '/admin/users', { cookie })).status, 401);
     assert.equal((await request(mf, '/login', { body: { nickname: 'TestAdmin', password: body.password } })).body.user.isAdmin, true);
-  } finally { await mf.dispose(); }
+  } finally { await mf.close(); }
 });
 
-test('Workers 账号：密码校验、唯一昵称、Cookie、跨站拒绝、记录隔离与退出', async () => {
-  const mf = runtime();
+test('账号：密码校验、唯一昵称、Cookie、跨站拒绝、记录隔离与退出', async () => {
+  const mf = await runtime();
   try {
     assert.equal((await request(mf, '/rooms')).status, 401);
     assert.equal((await request(mf, '/register', { body: { nickname: '测试', password: 'short' } })).status, 400);
@@ -265,13 +258,39 @@ test('Workers 账号：密码校验、唯一昵称、Cookie、跨站拒绝、记
     assert.equal((await request(mf, '/session', { cookie: user.cookie })).body.user, null);
     assert.equal((await request(mf, '/rooms', { cookie: user.cookie, body: {} })).status, 401);
     assert.equal((await request(mf, '/session', { cookie: login.cookie })).body.user.id, user.body.user.id);
-  } finally { await mf.dispose(); }
+  } finally { await mf.close(); }
+});
+
+test('HTTP 与 WebSocket 边界：正文限制、JSON 校验、跨站和未登录连接拒绝', async () => {
+  const mf = await runtime();
+  try {
+    for (const [body, status] of [['{', 400], ['null', 400], ['[]', 400], ['x'.repeat(16385), 413]]) {
+      const response = await fetch(mf.url + '/api/register', { method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' }, body });
+      assert.equal(response.status, status); assert.ok((await response.json()).error);
+    }
+    assert.equal((await request(mf, '/register', { body: { nickname: '格式', password }, headers: { 'Content-Type': 'text/plain' } })).status, 400);
+    const user = await register(mf, '连接测试');
+    const room = (await request(mf, '/rooms', { cookie: user.cookie, body: {} })).body;
+    for (const [headers, status] of [[{ Origin: origin }, 401], [{ Origin: 'https://evil.test', Cookie: user.cookie }, 403]]) {
+      const ws = new WebSocket(`${mf.url.replace(/^http/, 'ws')}/api/rooms/${room.code}/socket`, { headers });
+      const response = await new Promise((resolve, reject) => {
+        ws.once('unexpected-response', (_req, res) => { res.resume(); resolve(res.statusCode); ws.terminate(); });
+        ws.once('error', reject);
+        ws.once('open', () => { ws.terminate(); reject(new Error('无效连接被接受')); });
+      });
+      assert.equal(response, status);
+    }
+    const ws = await socket(mf, room.code, user.cookie);
+    const closed = new Promise((resolve) => ws.once('close', resolve));
+    ws.send(JSON.stringify({ type: 'start' }));
+    assert.equal(await closed, 1008);
+  } finally { await mf.close(); }
 });
 
 test('注册限流：旧失败计数不阻塞注册，服务端故障回滚，冲突不占额度，成功注册仍限额', async () => {
-  const mf = runtime();
+  const mf = await runtime();
   try {
-    const db = (await mf.getDurableObjectNamespace('APP')).getByName('main');
+    const db = mf.app;
     await db.one('INSERT INTO limits VALUES (?,?,?)', 'register:192.0.2.1', 8, Date.now() + 3600000);
     await db.one('INSERT INTO limits VALUES (?,?,?)', 'login:注册测试', 10, Date.now() + 900000);
     await db.one("CREATE TRIGGER fail_session BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'test session failure'); END");
@@ -299,14 +318,14 @@ test('注册限流：旧失败计数不阻塞注册，服务端故障回滚，�
     await db.one('UPDATE limits SET until=? WHERE key=?', Date.now() - 1, 'registered:192.0.2.1');
     await register(mf, '第九个账号');
     assert.equal((await db.one('SELECT count FROM limits WHERE key=?', 'registered:192.0.2.1')).count, 1);
-  } finally { await mf.dispose(); }
+  } finally { await mf.close(); }
 });
 
 test('登录限流：服务端故障不扣昵称额度，错误密码仍计数，限流不延长等待，到期恢复', async () => {
-  const mf = runtime();
+  const mf = await runtime();
   try {
     await register(mf, '登录测试');
-    const db = (await mf.getDurableObjectNamespace('APP')).getByName('main');
+    const db = mf.app;
     await db.one("CREATE TRIGGER fail_session BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'test session failure'); END");
     assert.equal((await request(mf, '/login', { body: { nickname: '登录测试', password } })).status, 500);
     assert.equal(await db.one('SELECT * FROM limits WHERE key=?', 'login:登录测试'), undefined);
@@ -328,11 +347,11 @@ test('登录限流：服务端故障不扣昵称额度，错误密码仍计数�
     await db.one('UPDATE limits SET until=? WHERE key=?', Date.now() - 1, 'login:登录测试');
     assert.equal((await request(mf, '/login', { body: { nickname: '登录测试', password } })).status, 200);
     assert.equal(await db.one('SELECT * FROM limits WHERE key=?', 'login:登录测试'), undefined);
-  } finally { await mf.dispose(); }
+  } finally { await mf.close(); }
 });
 
 test('认证请求仍按 IP 限流，注册和登录共享额度，到期后恢复', async () => {
-  const mf = runtime();
+  const mf = await runtime();
   try {
     for (let i = 0; i < 30; i++) {
       assert.equal((await request(mf, i % 2 ? '/login' : '/register', { body: { nickname: '请求测试', password: 'short' } })).status, 400);
@@ -341,16 +360,16 @@ test('认证请求仍按 IP 限流，注册和登录共享额度，到期后恢�
     assert.equal(blocked.status, 429);
     assert.match(blocked.body.error, /^登录或注册请求过多，请在 \d+ 分钟后重试$/);
     assert.ok(Number(blocked.headers.get('Retry-After')) > 0 && Number(blocked.headers.get('Retry-After')) <= 900);
-    const db = (await mf.getDurableObjectNamespace('APP')).getByName('main');
+    const db = mf.app;
     assert.equal((await db.one('SELECT COUNT(*) AS n FROM users')).n, 0);
     await db.one('UPDATE limits SET until=? WHERE key=?', Date.now() - 1, 'auth:192.0.2.1');
     await register(mf, '请求测试');
-  } finally { await mf.dispose(); }
+  } finally { await mf.close(); }
 });
 
-test('Durable Object：四端同步、并发收款、账号锁定、结算不可撤销与重启保存', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'dianque-worker-'));
-  let mf = runtime(dir);
+test('Node 服务：四端同步、并发收款、账号锁定、结算不可撤销与重启保存', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dianque-server-'));
+  let mf = await runtime(dir);
   const sockets = [];
   try {
     const players = [];
@@ -409,7 +428,7 @@ test('Durable Object：四端同步、并发收款、账号锁定、结算不可
     assert.equal(room.state.hand, 1); assert.equal(room.state.honba, 1);
     await action(0, { type: 'end' });
     const beforeRestart = structuredClone(room);
-    sockets.splice(0).forEach((ws) => ws.close()); await mf.dispose(); mf = runtime(dir);
+    sockets.splice(0).forEach((ws) => ws.close()); await mf.close(); mf = await runtime(dir);
     room = (await request(mf, `/rooms/${code}`, { cookie: players[0].cookie })).body;
     assert.deepEqual(room.state, beforeRestart.state); assert.deepEqual(room.events, beforeRestart.events);
     assert.equal((await request(mf, '/session', { cookie: secondDevice.cookie })).body.activeRoom, code);
@@ -417,11 +436,11 @@ test('Durable Object：四端同步、并发收款、账号锁定、结算不可
     const reconnected = await socket(mf, code, players[0].cookie); sockets.push(reconnected);
     const update = message(reconnected, (r) => r.state?.status === 'ended'); await action(0, { type: 'confirm-end' }); await update;
     assert.equal((await request(mf, '/history', { cookie: players[0].cookie })).body.games, 2);
-  } finally { sockets.forEach((ws) => ws.close()); await mf.dispose(); await rm(dir, { recursive: true, force: true }); }
+  } finally { sockets.forEach((ws) => ws.close()); await mf.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test('退出房间：同步释放座位和转交房主、关闭同账号连接、清除回房状态并保留战绩', async () => {
-  const mf = runtime(), sockets = [];
+  const mf = await runtime(), sockets = [];
   try {
     const players = [];
     for (const name of ['退出房主', '接任房主', '第三位', '第四位']) players.push(await register(mf, name));
@@ -460,11 +479,11 @@ test('退出房间：同步释放座位和转交房主、关闭同账号连接�
     room = (await request(mf, `/rooms/${code}/join`, { cookie: players[0].cookie, method: 'POST' })).body;
     assert.equal(room.players[3].id, players[0].body.user.id); assert.equal(room.hostId, players[1].body.user.id);
     assert.deepEqual((await request(mf, `/matches/${matchId}`, { cookie: players[0].cookie })).body, record);
-  } finally { sockets.forEach((ws) => ws.close()); await mf.dispose(); }
+  } finally { sockets.forEach((ws) => ws.close()); await mf.close(); }
 });
 
 test('个人战绩：三人四人分开、平均顺位、最近二十场、分页、私有记录', async () => {
-  const mf = runtime();
+  const mf = await runtime();
   try {
     const players = [];
     for (const name of ['甲', '乙', '丙', '其他人']) players.push(await register(mf, name));
@@ -494,5 +513,5 @@ test('个人战绩：三人四人分开、平均顺位、最近二十场、分�
     const joined = await request(mf, `/rooms/${code}/join`, { cookie: players[3].cookie, method: 'POST' });
     assert.equal(joined.status, 200);
     assert.deepEqual((await request(mf, `/rooms/${code}/history`, { cookie: players[3].cookie })).body, []);
-  } finally { await mf.dispose(); }
+  } finally { await mf.close(); }
 });

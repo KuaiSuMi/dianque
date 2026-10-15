@@ -1,4 +1,6 @@
-import { DurableObject } from 'cloudflare:workers';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { randomInt, randomUUID } from 'node:crypto';
 import { applyAction, check, GameError, joinRoom, leaveRoom, newRoom, publicRoom, stateOf } from './game.js';
 import { cookie, credentials, nicknameValue, passwordValue, newToken, passwordHash, sessionHash, SESSION_SECONDS, verifyPassword, digest } from './auth.js';
@@ -28,11 +30,15 @@ async function bodyOf(request) {
   return body;
 }
 
-export class Dianque extends DurableObject {
-  constructor(ctx, env) {
-    super(ctx, env);
-    this.sql = ctx.storage.sql;
-    this.sql.exec(`
+export class Dianque {
+  constructor({ database = ':memory:', adminId = '', clients = new Set() } = {}) {
+    if (database !== ':memory:') mkdirSync(dirname(database), { recursive: true });
+    this.db = new DatabaseSync(database);
+    this.adminId = adminId;
+    this.clients = clients;
+    this.db.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = FULL;
       CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, nickname_key TEXT UNIQUE NOT NULL, nickname TEXT NOT NULL, salt TEXT NOT NULL, password_hash TEXT NOT NULL, active_room TEXT, last_room TEXT, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
@@ -45,10 +51,16 @@ export class Dianque extends DurableObject {
       CREATE TABLE IF NOT EXISTS limits (key TEXT PRIMARY KEY, count INTEGER NOT NULL, until INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS limits_expiry ON limits(until);
     `);
-    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
 
-  one(query, ...args) { return this.sql.exec(query, ...args).toArray()[0]; }
+  rows(query, ...args) { return this.db.prepare(query).all(...args); }
+  one(query, ...args) { return this.rows(query, ...args)[0]; }
+  transaction(callback) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try { const result = callback(); this.db.exec('COMMIT'); return result; }
+    catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  sockets(tag) { return [...this.clients].filter((ws) => !tag || ws.data.code === tag || ws.data.userId === tag); }
   limit(key, max, duration = 60000, message = '操作太频繁') {
     const now = Date.now();
     const row = this.one('SELECT count,until FROM limits WHERE key=?', key);
@@ -57,13 +69,13 @@ export class Dianque extends DurableObject {
       const wait = retryAfter >= 60 ? `${Math.ceil(retryAfter / 60)} 分钟` : `${retryAfter} 秒`;
       throw Object.assign(new Error(`${message}，请在 ${wait}后重试`), { status: 429, retryAfter });
     }
-    this.sql.exec('INSERT INTO limits VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET count=excluded.count,until=excluded.until', key, row && row.until > now ? row.count + 1 : 1, row && row.until > now ? row.until : now + duration);
+    this.rows('INSERT INTO limits VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET count=excluded.count,until=excluded.until', key, row && row.until > now ? row.count + 1 : 1, row && row.until > now ? row.until : now + duration);
   }
   user(request) {
     const hash = sessionHash(request);
     return hash ? this.one('SELECT users.*,sessions.hash AS session_hash,sessions.expires_at FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.hash=? AND sessions.expires_at>?', hash, Date.now()) : null;
   }
-  isAdmin(user) { return user.id === this.env.ADMIN_USER_ID; }
+  isAdmin(user) { return user.id === this.adminId; }
   publicUser(user) { return { id: user.id, nickname: user.nickname, isAdmin: this.isAdmin(user) }; }
   session(user) { return { user: this.publicUser(user), activeRoom: user.active_room, lastRoom: user.last_room }; }
   admin(request, url, body, user) {
@@ -73,7 +85,7 @@ export class Dianque extends DurableObject {
       const offset = Number(url.searchParams.get('offset') || 0);
       check(query.length <= 128 && Number.isSafeInteger(offset) && offset >= 0, '查询条件无效');
       const total = this.one('SELECT COUNT(*) AS n FROM users WHERE instr(nickname_key,?)>0', query).n;
-      const users = this.sql.exec('SELECT id,nickname,created_at FROM users WHERE instr(nickname_key,?)>0 ORDER BY created_at DESC,id LIMIT 20 OFFSET ?', query, offset).toArray();
+      const users = this.rows('SELECT id,nickname,created_at FROM users WHERE instr(nickname_key,?)>0 ORDER BY created_at DESC,id LIMIT 20 OFFSET ?', query, offset);
       return json({ total, users: users.map((row) => ({ ...this.publicUser(row), createdAt: row.created_at })) });
     }
     const route = url.pathname.match(/^\/api\/admin\/users\/([a-f0-9-]{36})$/);
@@ -83,31 +95,31 @@ export class Dianque extends DurableObject {
     const renamed = 'nickname' in body ? nicknameValue(body.nickname) : null;
     const password = 'password' in body ? passwordValue(body.password) : null;
     const rooms = [];
-    const updated = this.ctx.storage.transactionSync(() => {
+    const updated = this.transaction(() => {
       const target = this.one('SELECT * FROM users WHERE id=?', route[1]);
       if (!target) fail(404, '账号不存在');
       this.limit(`admin:${user.id}`, 30, 3600000, '账号修改次数过多');
       if (renamed) {
         if (this.one('SELECT id FROM users WHERE nickname_key=? AND id<>?', renamed.key, target.id)) fail(409, '昵称已被使用');
-        this.sql.exec('UPDATE users SET nickname=?,nickname_key=? WHERE id=?', renamed.nickname, renamed.key, target.id);
-        for (const row of this.sql.exec('SELECT rooms.payload FROM members JOIN rooms ON rooms.code=members.code WHERE members.user_id=?', target.id).toArray()) {
+        this.rows('UPDATE users SET nickname=?,nickname_key=? WHERE id=?', renamed.nickname, renamed.key, target.id);
+        for (const row of this.rows('SELECT rooms.payload FROM members JOIN rooms ON rooms.code=members.code WHERE members.user_id=?', target.id)) {
           const room = JSON.parse(row.payload), player = room.players.find((p) => p.id === target.id);
           if (!player) continue;
           player.name = renamed.nickname; room.revision++;
-          this.sql.exec('UPDATE rooms SET payload=? WHERE code=?', JSON.stringify(room), room.code);
+          this.rows('UPDATE rooms SET payload=? WHERE code=?', JSON.stringify(room), room.code);
           rooms.push(room);
         }
       }
       if (password) {
         const { salt, hash } = passwordHash(password);
-        this.sql.exec('UPDATE users SET salt=?,password_hash=? WHERE id=?', salt, hash, target.id);
-        this.sql.exec('DELETE FROM sessions WHERE user_id=?', target.id);
-        this.sql.exec('DELETE FROM limits WHERE key=?', `password:${target.id}`);
+        this.rows('UPDATE users SET salt=?,password_hash=? WHERE id=?', salt, hash, target.id);
+        this.rows('DELETE FROM sessions WHERE user_id=?', target.id);
+        this.rows('DELETE FROM limits WHERE key=?', `password:${target.id}`);
       }
-      this.sql.exec('DELETE FROM limits WHERE key=? OR key=?', `login:${target.nickname_key}`, `login:${renamed?.key || target.nickname_key}`);
+      this.rows('DELETE FROM limits WHERE key=? OR key=?', `login:${target.nickname_key}`, `login:${renamed?.key || target.nickname_key}`);
       return this.publicUser({ ...target, nickname: renamed?.nickname || target.nickname });
     });
-    if (password) for (const ws of this.ctx.getWebSockets(updated.id)) ws.close(4001, '密码已重置，请重新登录');
+    if (password) for (const ws of this.sockets(updated.id)) ws.close(4001, '密码已重置，请重新登录');
     rooms.forEach((room) => this.broadcast(room));
     const signedOut = !!password && updated.id === user.id;
     return json({ user: updated, signedOut }, 200, signedOut ? { 'Set-Cookie': cookie('', request, 0) } : {});
@@ -125,13 +137,13 @@ export class Dianque extends DurableObject {
     check(!current || current === code, `对局尚未结束，请先回到房间 ${current}`);
   }
   view(room) {
-    return publicRoom(room, this.ctx.getWebSockets(room.code).filter((ws) => ws.readyState === 1).map((ws) => ws.deserializeAttachment().userId));
+    return publicRoom(room, this.sockets(room.code).filter((ws) => ws.readyState === 1).map((ws) => ws.data.userId));
   }
   broadcast(room) {
-    const sockets = this.ctx.getWebSockets(room.code);
+    const sockets = this.sockets(room.code);
     for (const ws of sockets) {
       if (ws.readyState !== 1) continue;
-      const { sessionHash: hash, userId } = ws.deserializeAttachment();
+      const { sessionHash: hash, userId } = ws.data;
       if (!this.one('SELECT hash FROM sessions WHERE hash=? AND expires_at>?', hash, Date.now())) ws.close(4001, '登录已过期');
       else if (!room.players.some((p) => p.id === userId)) ws.close(4002, '已退出房间');
     }
@@ -144,9 +156,9 @@ export class Dianque extends DurableObject {
     const { players, events, config } = publicRoom(room);
     const endedAt = room.history[room.cursor].entry.at;
     const record = { id: room.matchId, code: room.code, createdAt: room.createdAt, endedAt, state, config, events, players: players.map(({ id, name, seat }) => ({ id, name, seat })) };
-    this.sql.exec('INSERT INTO matches VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET ended_at=excluded.ended_at,payload=excluded.payload', record.id, room.code, endedAt, players.length, config.length, JSON.stringify(record));
+    this.rows('INSERT INTO matches VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET ended_at=excluded.ended_at,payload=excluded.payload', record.id, room.code, endedAt, players.length, config.length, JSON.stringify(record));
     const ranking = [...players].sort((a, b) => state.scores[b.seat] - state.scores[a.seat] || a.seat - b.seat);
-    ranking.forEach((p, i) => this.sql.exec('INSERT INTO results VALUES (?,?,?,?) ON CONFLICT(match_id,user_id) DO UPDATE SET rank=excluded.rank,score=excluded.score', record.id, p.id, i + 1, state.scores[p.seat]));
+    ranking.forEach((p, i) => this.rows('INSERT INTO results VALUES (?,?,?,?) ON CONFLICT(match_id,user_id) DO UPDATE SET rank=excluded.rank,score=excluded.score', record.id, p.id, i + 1, state.scores[p.seat]));
   }
   save(room) {
     if (active(room)) {
@@ -154,15 +166,15 @@ export class Dianque extends DurableObject {
         const other = this.one('SELECT active_room FROM users WHERE id=?', player.id).active_room;
         check(!other || other === room.code, `${player.name}正在另一房间对局`);
       }
-      room.players.forEach((p) => this.sql.exec('UPDATE users SET active_room=?,last_room=? WHERE id=?', room.code, room.code, p.id));
-    } else this.sql.exec('UPDATE users SET active_room=NULL WHERE active_room=?', room.code);
+      room.players.forEach((p) => this.rows('UPDATE users SET active_room=?,last_room=? WHERE id=?', room.code, room.code, p.id));
+    } else this.rows('UPDATE users SET active_room=NULL WHERE active_room=?', room.code);
     this.archive(room);
     // 已结束场次独立存入 matches，避免每次广播重复传输历史。
     room.matches = [];
-    this.sql.exec('INSERT INTO rooms VALUES (?,?) ON CONFLICT(code) DO UPDATE SET payload=excluded.payload', room.code, JSON.stringify(room));
+    this.rows('INSERT INTO rooms VALUES (?,?) ON CONFLICT(code) DO UPDATE SET payload=excluded.payload', room.code, JSON.stringify(room));
   }
 
-  async fetch(request) {
+  async fetch(request, { ip, upgrade } = {}) {
     try {
       const url = new URL(request.url), path = url.pathname, method = request.method;
       if (method !== 'GET' || request.headers.get('Upgrade')) {
@@ -171,27 +183,26 @@ export class Dianque extends DurableObject {
       if (path === '/api/health') return json({ ok: true });
       const body = method === 'POST' && request.body ? await bodyOf(request) : {};
       if (method === 'POST' && ['/api/register', '/api/login'].includes(path)) {
-        const ip = request.headers.get('CF-Connecting-IP') || 'local';
         this.limit(`auth:${ip}`, 30, 15 * 60000, '登录或注册请求过多');
         const { nickname, key, password } = credentials(body);
         // 账号、会话和配额一起提交，服务端故障不消耗注册或昵称登录额度。
-        return this.ctx.storage.transactionSync(() => {
+        return this.transaction(() => {
           let user = this.one('SELECT * FROM users WHERE nickname_key=?', key);
           if (path === '/api/register') {
             if (user) fail(409, '昵称已被使用');
             this.limit(`registered:${ip}`, 8, 3600000, '注册账号过多');
             const { salt, hash } = passwordHash(password);
-            this.sql.exec('INSERT INTO users(id,nickname_key,nickname,salt,password_hash,created_at) VALUES (?,?,?,?,?,?)', randomUUID(), key, nickname, salt, hash, new Date().toISOString());
+            this.rows('INSERT INTO users(id,nickname_key,nickname,salt,password_hash,created_at) VALUES (?,?,?,?,?,?)', randomUUID(), key, nickname, salt, hash, new Date().toISOString());
             user = this.one('SELECT * FROM users WHERE nickname_key=?', key);
           } else {
             this.limit(`login:${key}`, 10, 15 * 60000, '登录尝试过多');
             // 密码错误仍须提交失败计数，不能抛出异常触发回滚。
             if (!verifyPassword(password, user)) return json({ error: '昵称或密码不正确' }, 401);
           }
-          this.sql.exec('DELETE FROM limits WHERE key=? OR until<?', `login:${key}`, Date.now());
-          this.sql.exec('DELETE FROM sessions WHERE expires_at<?', Date.now());
+          this.rows('DELETE FROM limits WHERE key=? OR until<?', `login:${key}`, Date.now());
+          this.rows('DELETE FROM sessions WHERE expires_at<?', Date.now());
           const token = newToken();
-          this.sql.exec('INSERT INTO sessions VALUES (?,?,?)', digest(token), user.id, Date.now() + SESSION_SECONDS * 1000);
+          this.rows('INSERT INTO sessions VALUES (?,?,?)', digest(token), user.id, Date.now() + SESSION_SECONDS * 1000);
           return json(this.session(user), path === '/api/register' ? 201 : 200, { 'Set-Cookie': cookie(token, request) });
         });
       }
@@ -204,25 +215,25 @@ export class Dianque extends DurableObject {
         check(Object.keys(body).length === 2 && Object.keys(body).every((key) => ['currentPassword', 'newPassword'].includes(key)), '请填写原密码和新密码');
         const currentPassword = passwordValue(body.currentPassword), newPassword = passwordValue(body.newPassword);
         check(currentPassword !== newPassword, '新密码不能与原密码相同');
-        const response = this.ctx.storage.transactionSync(() => {
+        const response = this.transaction(() => {
           this.limit(`password:${user.id}`, 10, 15 * 60000, '原密码验证次数过多');
           if (!verifyPassword(currentPassword, user)) return json({ error: '原密码不正确' }, 400);
           const { salt, hash } = passwordHash(newPassword);
-          this.sql.exec('UPDATE users SET salt=?,password_hash=? WHERE id=?', salt, hash, user.id);
-          this.sql.exec('DELETE FROM sessions WHERE user_id=?', user.id);
-          this.sql.exec('DELETE FROM limits WHERE key=? OR key=?', `password:${user.id}`, `login:${user.nickname_key}`);
+          this.rows('UPDATE users SET salt=?,password_hash=? WHERE id=?', salt, hash, user.id);
+          this.rows('DELETE FROM sessions WHERE user_id=?', user.id);
+          this.rows('DELETE FROM limits WHERE key=? OR key=?', `password:${user.id}`, `login:${user.nickname_key}`);
           return json({ ok: true }, 200, { 'Set-Cookie': cookie('', request, 0) });
         });
-        if (response.ok) for (const ws of this.ctx.getWebSockets(user.id)) ws.close(4001, '密码已修改，请重新登录');
+        if (response.ok) for (const ws of this.sockets(user.id)) ws.close(4001, '密码已修改，请重新登录');
         return response;
       }
       if (path === '/api/logout' && method === 'POST') {
-        this.sql.exec('DELETE FROM sessions WHERE hash=?', user.session_hash);
-        for (const ws of this.ctx.getWebSockets()) if (ws.deserializeAttachment().sessionHash === user.session_hash) ws.close(4001, '已退出登录');
+        this.rows('DELETE FROM sessions WHERE hash=?', user.session_hash);
+        for (const ws of this.sockets()) if (ws.data.sessionHash === user.session_hash) ws.close(4001, '已退出登录');
         return json({ ok: true }, 200, { 'Set-Cookie': cookie('', request, 0) });
       }
       if (path === '/api/rooms' && method === 'GET') {
-        const rows = this.sql.exec('SELECT rooms.code,rooms.payload FROM members JOIN rooms ON rooms.code=members.code WHERE members.user_id=? ORDER BY joined_at DESC LIMIT 50', user.id).toArray();
+        const rows = this.rows('SELECT rooms.code,rooms.payload FROM members JOIN rooms ON rooms.code=members.code WHERE members.user_id=? ORDER BY joined_at DESC LIMIT 50', user.id);
         return json(rows.map(({ payload }) => { const room = JSON.parse(payload); return { code: room.code, config: { ...room.config, playerCount: stateOf(room).scores.length }, status: stateOf(room).status }; }));
       }
       if (path === '/api/rooms' && method === 'POST') {
@@ -231,10 +242,10 @@ export class Dianque extends DurableObject {
         let code;
         do { code = Array.from({ length: 4 }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[randomInt(26)]).join(''); } while (this.one('SELECT code FROM rooms WHERE code=?', code));
         const room = newRoom(code, { id: user.id, name: user.nickname, seat: 0 }, { startPoints: body.startPoints ?? 25000, startDealer: 0, length: body.length ?? 'south' }, body.playerCount ?? 4);
-        this.ctx.storage.transactionSync(() => {
+        this.transaction(() => {
           this.save(room);
-          this.sql.exec('INSERT INTO members VALUES (?,?,?)', user.id, code, new Date().toISOString());
-          this.sql.exec('UPDATE users SET last_room=? WHERE id=?', code, user.id);
+          this.rows('INSERT INTO members VALUES (?,?,?)', user.id, code, new Date().toISOString());
+          this.rows('UPDATE users SET last_room=? WHERE id=?', code, user.id);
         });
         return json(this.view(room), 201);
       }
@@ -245,7 +256,7 @@ export class Dianque extends DurableObject {
         check(Number.isSafeInteger(offset) && offset >= 0, '页码无效');
         const stats = this.one('SELECT COUNT(*) AS games,AVG(results.rank) AS averageRank FROM results JOIN matches ON matches.id=results.match_id WHERE user_id=? AND player_count=?', user.id, count);
         const query = 'SELECT matches.id,code,ended_at AS endedAt,length,player_count AS playerCount,rank,score FROM results JOIN matches ON matches.id=results.match_id WHERE user_id=? AND player_count=? ORDER BY ended_at DESC,matches.id DESC LIMIT 20 OFFSET ?';
-        return json({ ...stats, recent: this.sql.exec(query, user.id, count, 0).toArray().reverse(), matches: this.sql.exec(query, user.id, count, offset).toArray() });
+        return json({ ...stats, recent: this.rows(query, user.id, count, 0).reverse(), matches: this.rows(query, user.id, count, offset) });
       }
       const matchRoute = path.match(/^\/api\/matches\/([a-f0-9-]{36})$/);
       if (matchRoute && method === 'GET') {
@@ -259,10 +270,10 @@ export class Dianque extends DurableObject {
       if (operation === 'join' && method === 'POST') {
         this.checkActive(user, code);
         const room = this.room(code);
-        this.ctx.storage.transactionSync(() => {
+        this.transaction(() => {
           if (!room.players.some((p) => p.id === user.id)) { joinRoom(room, { id: user.id, name: user.nickname, seat: room.players.length }); this.save(room); }
-          this.sql.exec('INSERT INTO members VALUES (?,?,?) ON CONFLICT(user_id,code) DO UPDATE SET joined_at=excluded.joined_at', user.id, code, new Date().toISOString());
-          this.sql.exec('UPDATE users SET last_room=? WHERE id=?', code, user.id);
+          this.rows('INSERT INTO members VALUES (?,?,?) ON CONFLICT(user_id,code) DO UPDATE SET joined_at=excluded.joined_at', user.id, code, new Date().toISOString());
+          this.rows('UPDATE users SET last_room=? WHERE id=?', code, user.id);
         });
         this.broadcast(room);
         return json(this.view(room));
@@ -271,32 +282,29 @@ export class Dianque extends DurableObject {
       if (operation === 'history' && method === 'GET') {
         const offset = Number(url.searchParams.get('offset') || 0);
         check(Number.isSafeInteger(offset) && offset >= 0, '页码无效');
-        return json(this.sql.exec('SELECT payload FROM matches JOIN results ON results.match_id=matches.id WHERE code=? AND matches.id<>? AND results.user_id=? ORDER BY ended_at DESC,matches.id DESC LIMIT 20 OFFSET ?', code, room.matchId, user.id, offset).toArray().map(({ payload }) => JSON.parse(payload)));
+        return json(this.rows('SELECT payload FROM matches JOIN results ON results.match_id=matches.id WHERE code=? AND matches.id<>? AND results.user_id=? ORDER BY ended_at DESC,matches.id DESC LIMIT 20 OFFSET ?', code, room.matchId, user.id, offset).map(({ payload }) => JSON.parse(payload)));
       }
       this.checkActive(user, code);
       if (!operation && method === 'GET') return json(this.view(room));
       if (operation === 'leave' && method === 'POST') {
-        this.ctx.storage.transactionSync(() => {
+        this.transaction(() => {
           leaveRoom(room, user.id);
           this.save(room);
-          this.sql.exec('DELETE FROM members WHERE user_id=? AND code=?', user.id, code);
-          this.sql.exec('UPDATE users SET last_room=NULL WHERE id=? AND last_room=?', user.id, code);
+          this.rows('DELETE FROM members WHERE user_id=? AND code=?', user.id, code);
+          this.rows('UPDATE users SET last_room=NULL WHERE id=? AND last_room=?', user.id, code);
         });
         this.broadcast(room);
         return json({ ok: true });
       }
       if (operation === 'action' && method === 'POST') {
-        this.ctx.storage.transactionSync(() => { if (applyAction(room, user.id, body)) this.save(room); });
+        this.transaction(() => { if (applyAction(room, user.id, body)) this.save(room); });
         this.broadcast(room);
         return json(this.view(room));
       }
       if (operation === 'socket' && request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
-        check(this.ctx.getWebSockets(user.id).length < 12, '打开的页面过多，请关闭部分页面后重试');
-        const [client, server] = Object.values(new WebSocketPair());
-        server.serializeAttachment({ code, userId: user.id, sessionHash: user.session_hash });
-        this.ctx.acceptWebSocket(server, [code, user.id]);
-        this.broadcast(room);
-        return new Response(null, { status: 101, webSocket: client });
+        check(this.sockets(user.id).length < 12, '打开的页面过多，请关闭部分页面后重试');
+        if (!upgrade) fail(400, '需要 WebSocket 连接');
+        return upgrade({ code, userId: user.id, sessionHash: user.session_hash }, room);
       }
       fail(404, '接口不存在');
     } catch (error) {
@@ -305,14 +313,4 @@ export class Dianque extends DurableObject {
       return json({ error: status === 500 ? '服务暂时不可用，请重试' : error.message }, status, error.retryAfter ? { 'Retry-After': String(error.retryAfter) } : {});
     }
   }
-  webSocketMessage(ws) { ws.close(1008, '请通过页面提交操作'); }
-  webSocketClose(ws) { ws.close(1000, '连接已关闭'); this.broadcast(this.room(ws.deserializeAttachment().code)); }
-  webSocketError(ws) { ws.close(1011, '连接中断'); }
 }
-
-export default {
-  fetch(request, env) {
-    const url = new URL(request.url);
-    return url.pathname.startsWith('/api/') ? env.APP.getByName('main').fetch(request) : env.ASSETS.fetch(request);
-  }
-};

@@ -1,0 +1,13 @@
+[Unit]
+Description=Back up Dianque SQLite database
+After=dianque.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/dianque/deploy/backup.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dianque /var/backups/dianque

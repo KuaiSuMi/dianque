@@ -34,25 +34,17 @@ npm run build
 npm start
 ```
 
-电脑打开 `http://localhost:3000`。手机连接同一 Wi-Fi，打开终端显示的局域网地址，电脑需保持运行。开发时使用 `npm run dev`；前端修改后需重新构建。本地数据保存在 `.wrangler/state`，与线上隔离。
+电脑打开 `http://localhost:3000`。开发时使用 `npm run dev`，前端热更新；生产运行前执行构建。本地账号和对局保存在 `data/dianque.sqlite`，退出程序后保留。
+
+需要手机在同一 Wi-Fi 下调试时，将环境变量 `HOST` 设为 `0.0.0.0`，然后访问电脑的局域网 IP 和端口 3000。公网部署保持默认的 `127.0.0.1`，通过反向代理访问。
 
 ## 部署
 
-在 Cloudflare Workers 中连接自己的 GitHub 仓库，使用以下配置：
+使用 Ubuntu 24.04、Node.js 24 LTS、Caddy 和 systemd。HTTP 接口与 WebSocket 使用同一端口，SQLite 存在代码目录之外；应用以独立用户运行，自动重启，每天备份。
 
-| 配置 | 值 |
-| --- | --- |
-| Worker 名称 | 与 `wrangler.jsonc` 的 `name` 一致 |
-| 生产分支 | `main` |
-| 根目录 | `/` |
-| 构建命令 | `npm run build && npm test` |
-| 部署命令 | `npx wrangler deploy` |
+安装、域名 HTTPS、管理员配置、更新与恢复见 [部署说明](deploy/README.md)。当前版本仅部署到普通 Linux 服务器。
 
-后续推送会在构建和测试通过后自动发布。首次部署需完成 Cloudflare 与 GitHub 授权；保留仓库内 Durable Object 绑定及注册配置，避免丢失现有数据。
-
-需要管理员时，在 Worker 的“设置 → 变量和机密”中添加名为 `ADMIN_USER_ID` 的 **Secret**，值为自己部署环境中的目标账号 ID。账号 ID 可在该 Worker 绑定的 Durable Object Data Studio 中查询 `users` 表。不要把真实账号 ID、密码或部署凭证写入仓库；本地调试的值放入已忽略的 `.dev.vars`。
-
-Secret 不随代码推送写入 Git，也不会被普通部署清除，配置方式见 [Cloudflare Secrets 文档](https://developers.cloudflare.com/workers/configuration/secrets/)。
+后续更新先提交并推送 GitHub `main`，再运行 `npm run deploy`。服务器从 GitHub 拉取对应提交，测试、构建并重启，账号与对局数据保留；不发布本地未提交内容。
 
 ## 检查
 

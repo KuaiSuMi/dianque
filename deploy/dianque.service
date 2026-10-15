@@ -1,0 +1,22 @@
+[Unit]
+Description=Dianque Mahjong Server
+After=network.target
+
+[Service]
+User=dianque
+Group=dianque
+WorkingDirectory=/opt/dianque
+EnvironmentFile=/etc/dianque.env
+ExecStart=/usr/bin/node server/index.js
+Restart=on-failure
+RestartSec=3
+StateDirectory=dianque
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target
