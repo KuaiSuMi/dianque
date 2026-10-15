@@ -33,6 +33,14 @@ export function voiceRoutes(http, app, webRequest) {
     if (volume === 100) app.rows('DELETE FROM riichi_voice_volumes WHERE voice_id=?', id);
     else app.rows('INSERT INTO riichi_voice_volumes VALUES (?,?) ON CONFLICT(voice_id) DO UPDATE SET volume=excluded.volume', id, volume);
   }
+  http.use(['/api/riichi-voices', '/media/riichi'], (req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    const user = app.user(webRequest(req));
+    if (!user) fail(401, '请先登录');
+    app.limit(`media-requests:${req.ip}`, 120);
+    res.locals.mediaUser = user.id;
+    next();
+  });
   function administrator(req) {
     const request = webRequest(req);
     if (req.method !== 'GET' && request.headers.get('Origin') !== new URL(request.url).origin) fail(403, '不允许跨站操作');
@@ -45,17 +53,23 @@ export function voiceRoutes(http, app, webRequest) {
     res.set('Cache-Control', 'no-store').json(app.rows('SELECT id,name,length(audio) AS size,COALESCE(volume,100) AS volume FROM riichi_voices LEFT JOIN riichi_voice_volumes ON voice_id=id ORDER BY name,id').map((voice) => ({ ...voice, url: `/media/riichi/${voice.id}` })));
   });
   http.get('/media/riichi/:id', (req, res) => {
-    const voice = app.one('SELECT type,audio FROM riichi_voices WHERE id=?', req.params.id);
-    res.set('Cache-Control', 'no-store');
+    const voice = app.one('SELECT type,length(audio) AS size FROM riichi_voices WHERE id=?', req.params.id);
     if (!voice) return res.sendStatus(404);
-    const data = Buffer.from(voice.audio), ranges = req.range(data.length);
-    res.set({ 'Content-Type': voice.type, 'Accept-Ranges': 'bytes' });
-    if (ranges === -1) return res.status(416).set('Content-Range', `bytes */${data.length}`).end();
-    if (ranges?.type === 'bytes' && ranges.length === 1) {
-      const { start, end } = ranges[0];
-      return res.status(206).set('Content-Range', `bytes ${start}-${end}/${data.length}`).send(data.subarray(start, end + 1));
-    }
-    res.send(data);
+    const etag = `"riichi-${req.params.id}"`;
+    res.set({ 'Content-Type': voice.type, 'Accept-Ranges': 'bytes', 'ETag': etag, 'Cache-Control': 'private, max-age=3600, must-revalidate' }).vary('Cookie');
+    if (req.fresh) return res.status(304).end();
+    const ranges = !req.get('If-Range') || req.get('If-Range') === etag ? req.range(voice.size) : undefined;
+    if (ranges !== undefined && (!Array.isArray(ranges) || ranges.type !== 'bytes' || ranges.length !== 1)) return res.status(416).set('Content-Range', `bytes */${voice.size}`).end();
+    const { start, end } = ranges?.[0] || { start: 0, end: voice.size - 1 };
+    const length = end - start + 1;
+    if (ranges) res.status(206).set('Content-Range', `bytes ${start}-${end}/${voice.size}`);
+    if (req.method === 'HEAD') return res.set('Content-Length', String(length)).end();
+    app.transaction(() => {
+      app.limit(`media-bytes:${res.locals.mediaUser}`, 30 * 1024 * 1024, 60000, '音频下载过多', length);
+      app.limit(`media-ip-bytes:${req.ip}`, 60 * 1024 * 1024, 60000, '音频下载过多', length);
+    });
+    const data = app.one('SELECT substr(audio,?,?) AS audio FROM riichi_voices WHERE id=?', start + 1, length, req.params.id);
+    res.set('Content-Length', String(length)).end(Buffer.from(data.audio));
   });
   http.use('/api/admin/riichi-voices', (req, res, next) => {
     const user = administrator(req);

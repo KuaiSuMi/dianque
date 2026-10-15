@@ -1,4 +1,5 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
 import { check } from './game.js';
 
 export const SESSION_SECONDS = 30 * 24 * 60 * 60;
@@ -17,12 +18,18 @@ export function passwordValue(value) {
 export function credentials(body) {
   return { ...nicknameValue(body.nickname), password: passwordValue(body.password) };
 }
-export function passwordHash(password, salt = randomBytes(16).toString('hex')) {
-  // 使用 scrypt 的 32 MiB 档位，避免小内存实例因密码校验耗尽内存。
-  return { salt, hash: scryptSync(password, Buffer.from(salt, 'hex'), 32, { N: 32768, r: 8, p: 3, maxmem: 64 * 1024 * 1024 }).toString('hex') };
+const derive = promisify(scrypt);
+let hashing = 0;
+export async function passwordHash(password, salt = randomBytes(16).toString('hex')) {
+  if (hashing >= 4) throw Object.assign(new Error('认证繁忙，请稍后重试'), { status: 503, retryAfter: 1 });
+  hashing++;
+  try {
+    const hash = await derive(password, Buffer.from(salt, 'hex'), 32, { N: 32768, r: 8, p: 3, maxmem: 64 * 1024 * 1024 });
+    return { salt, hash: hash.toString('hex') };
+  } finally { hashing--; }
 }
-export function verifyPassword(password, user) {
-  const actual = passwordHash(password, user?.salt || '0'.repeat(32)).hash;
+export async function verifyPassword(password, user) {
+  const actual = (await passwordHash(password, user?.salt || '0'.repeat(32))).hash;
   return timingSafeEqual(Buffer.from(actual, 'hex'), Buffer.from(user?.password_hash || '0'.repeat(64), 'hex')) && !!user;
 }
 export function cookie(token, request, maxAge = SESSION_SECONDS) {

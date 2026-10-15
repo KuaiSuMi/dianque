@@ -89,7 +89,17 @@ npm run deploy
 
 查看日志：`journalctl -u dianque -u caddy -n 100 --no-pager`。此命令更新应用代码；若修改了 systemd 单元或 Caddy 配置，需按前文安装相应配置、校验并重载服务。前端由同一应用提供，API 和 WebSocket 不需要额外域名或跨域配置。
 
-## 备份与恢复
+## 安全设置
+
+生产环境发送 CSP、禁止页面嵌入、同源资源策略及 HSTS。CSP 只允许同源脚本；内联样式用于现有动画和布局。开发模式保留 Vite 热更新。
+
+密码校验使用最多四个并发的异步 scrypt，密码哈希格式不变；超过容量返回 503 和 Retry-After，不排队占用内存。登录尝试按来源 IP 和昵称分别计数，其他来源不能仅凭昵称锁住账号。异步校验结束后重新核实账号、会话和管理员权限，再在同步事务内写入。
+
+音频列表和下载均需登录。每个来源每分钟最多 120 次请求；每个账号每分钟最多下载 30 MiB，同一来源合计最多 60 MiB。浏览器私有缓存一小时，支持 ETag、HEAD 和单段 Range；部分下载只读取对应片段。Service Worker 不缓存受认证保护的音频。
+
+SSH 只允许密钥登录。先用新连接确认密钥可用，并保留当前连接及云控制台恢复入口，再安装 `deploy/sshd-key-only.conf` 到 `/etc/ssh/sshd_config.d/00-dianque-key-only.conf`，运行 `sshd -t` 后 `systemctl reload ssh`，最后再用新连接验证。应用部署不会改写 SSH 配置。阿里云安全组建议将 22 端口限定到管理者来源；费用告警需在阿里云控制台设置，应用下载限额不能替代云侧流量和费用防护。
+
+## 数据备份与恢复
 
 `dianque-backup.timer` 每天服务器时间 04:00 附近运行一次，SQLite 在线备份保存在 `/var/backups/dianque/`，校验通过后清理超过 14 天的备份。`systemctl list-timers dianque-backup.timer` 查看下一次时间。
 

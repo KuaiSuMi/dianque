@@ -65,15 +65,22 @@ export class Dianque {
     catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   sockets(tag) { return [...this.clients].filter((ws) => !tag || ws.data.code === tag || ws.data.userId === tag); }
-  limit(key, max, duration = 60000, message = '操作太频繁') {
+  checkLimit(key, max, message = '操作太频繁', cost = 1) {
     const now = Date.now();
     const row = this.one('SELECT count,until FROM limits WHERE key=?', key);
-    if (row && row.until > now && row.count >= max) {
+    if (row && row.until > now && row.count + cost > max) {
       const retryAfter = Math.ceil((row.until - now) / 1000);
       const wait = retryAfter >= 60 ? `${Math.ceil(retryAfter / 60)} 分钟` : `${retryAfter} 秒`;
       throw Object.assign(new Error(`${message}，请在 ${wait}后重试`), { status: 429, retryAfter });
     }
-    this.rows('INSERT INTO limits VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET count=excluded.count,until=excluded.until', key, row && row.until > now ? row.count + 1 : 1, row && row.until > now ? row.until : now + duration);
+    return row;
+  }
+  limit(key, max, duration = 60000, message = '操作太频繁', cost = 1) {
+    const row = this.checkLimit(key, max, message, cost), now = Date.now();
+    this.rows('INSERT INTO limits VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET count=excluded.count,until=excluded.until', key, row && row.until > now ? row.count + cost : cost, row && row.until > now ? row.until : now + duration);
+  }
+  clearLoginLimits(key) {
+    this.rows('DELETE FROM limits WHERE key LIKE ?', `login:%:${digest(key)}`);
   }
   user(request) {
     const hash = sessionHash(request);
@@ -83,14 +90,14 @@ export class Dianque {
   isAdmin(user) { return this.isSuperAdmin(user) || !!this.one('SELECT user_id FROM admins WHERE user_id=?', user.id); }
   publicUser(user) { return { id: user.id, nickname: user.nickname, isAdmin: this.isAdmin(user), isSuperAdmin: this.isSuperAdmin(user) }; }
   session(user) { return { user: this.publicUser(user), activeRoom: user.active_room, lastRoom: user.last_room }; }
-  createUser(body) {
-    const { nickname, key, password } = credentials(body);
+  createUser(body, { salt, hash }) {
+    const { nickname, key } = credentials(body);
     if (this.one('SELECT id FROM users WHERE nickname_key=?', key)) fail(409, '昵称已被使用');
-    const { salt, hash } = passwordHash(password), id = randomUUID();
+    const id = randomUUID();
     this.rows('INSERT INTO users(id,nickname_key,nickname,salt,password_hash,created_at) VALUES (?,?,?,?,?,?)', id, key, nickname, salt, hash, new Date().toISOString());
     return this.one('SELECT * FROM users WHERE id=?', id);
   }
-  admin(request, url, body, user) {
+  async admin(request, url, body, user) {
     if (!this.isAdmin(user)) fail(403, '仅管理员可使用管理功能');
     if (url.pathname.startsWith('/api/admin/announcements')) return this.announcements(request, url, body);
     const matchRoute = url.pathname.match(/^\/api\/admin\/matches\/([a-f0-9-]{36})$/);
@@ -113,7 +120,15 @@ export class Dianque {
     }
     if (url.pathname === '/api/admin/users' && request.method === 'POST') {
       check(Object.keys(body).length === 2 && Object.keys(body).every((key) => ['nickname', 'password'].includes(key)), '请填写昵称和密码');
-      const created = this.transaction(() => { this.limit(`admin:${user.id}`, 30, 3600000, '账号修改次数过多'); return this.createUser(body); });
+      this.checkLimit(`admin:${user.id}`, 30, '账号修改次数过多');
+      const encoded = await passwordHash(credentials(body).password);
+      const created = this.transaction(() => {
+        user = this.user(request);
+        if (!user) fail(401, '请先登录');
+        if (!this.isAdmin(user)) fail(403, '仅管理员可使用管理功能');
+        this.limit(`admin:${user.id}`, 30, 3600000, '账号修改次数过多');
+        return this.createUser(body, encoded);
+      });
       return json({ user: this.publicUser(created) }, 201);
     }
     if (url.pathname === '/api/admin/users' && request.method === 'GET') {
@@ -156,7 +171,8 @@ export class Dianque {
         this.rows('DELETE FROM admins WHERE user_id=?', target.id);
         this.rows('DELETE FROM members WHERE user_id=?', target.id);
         this.rows('DELETE FROM results WHERE user_id=?', target.id);
-        this.rows('DELETE FROM limits WHERE key IN (?,?,?,?)', `login:${target.nickname_key}`, `password:${target.id}`, `request:${target.id}`, `admin:${target.id}`);
+        this.clearLoginLimits(target.nickname_key);
+        this.rows('DELETE FROM limits WHERE key IN (?,?,?)', `password:${target.id}`, `request:${target.id}`, `admin:${target.id}`);
         this.rows('DELETE FROM users WHERE id=?', target.id);
         return rooms;
       });
@@ -169,10 +185,16 @@ export class Dianque {
     check(fields.length > 0 && fields.every((key) => ['nickname', 'password'].includes(key)), '仅支持修改昵称或密码');
     const renamed = 'nickname' in body ? nicknameValue(body.nickname) : null;
     const password = 'password' in body ? passwordValue(body.password) : null;
+    this.checkLimit(`admin:${user.id}`, 30, '账号修改次数过多');
+    const encoded = password ? await passwordHash(password) : null;
     const rooms = [];
     const updated = this.transaction(() => {
+      user = this.user(request);
+      if (!user) fail(401, '请先登录');
+      if (!this.isAdmin(user)) fail(403, '仅管理员可使用管理功能');
       const target = this.one('SELECT * FROM users WHERE id=?', route[1]);
       if (!target) fail(404, '账号不存在');
+      if (!this.isSuperAdmin(user) && this.isAdmin(target) && target.id !== user.id) fail(403, '只有超级管理员可以修改其他管理员');
       if (password) check(!user.active_room && !target.active_room, '对局中禁止修改密码，请结束并确认结算后再修改');
       this.limit(`admin:${user.id}`, 30, 3600000, '账号修改次数过多');
       if (renamed) {
@@ -187,12 +209,13 @@ export class Dianque {
         }
       }
       if (password) {
-        const { salt, hash } = passwordHash(password);
+        const { salt, hash } = encoded;
         this.rows('UPDATE users SET salt=?,password_hash=? WHERE id=?', salt, hash, target.id);
         this.rows('DELETE FROM sessions WHERE user_id=?', target.id);
         this.rows('DELETE FROM limits WHERE key=?', `password:${target.id}`);
       }
-      this.rows('DELETE FROM limits WHERE key=? OR key=?', `login:${target.nickname_key}`, `login:${renamed?.key || target.nickname_key}`);
+      this.clearLoginLimits(target.nickname_key);
+      if (renamed) this.clearLoginLimits(renamed.key);
       return this.publicUser({ ...target, nickname: renamed?.nickname || target.nickname });
     });
     if (password) for (const ws of this.sockets(updated.id)) ws.close(4001, '密码已重置，请重新登录');
@@ -288,19 +311,25 @@ export class Dianque {
       if (method === 'POST' && ['/api/register', '/api/login'].includes(path)) {
         this.limit(`auth:${ip}`, 30, 15 * 60000, '登录或注册请求过多');
         const { nickname, key, password } = credentials(body);
+        const loginKey = `login:${ip}:${digest(key)}`;
+        const snapshot = this.one('SELECT * FROM users WHERE nickname_key=?', key);
+        if (path === '/api/register' && snapshot) fail(409, '昵称已被使用');
+        this.checkLimit(path === '/api/register' ? `registered:${ip}` : loginKey, path === '/api/register' ? 8 : 10, path === '/api/register' ? '注册账号过多' : '登录尝试过多');
+        const encoded = path === '/api/register' ? await passwordHash(password) : null;
+        const verified = path === '/api/login' && await verifyPassword(password, snapshot);
         // 账号、会话和配额一起提交，服务端故障不消耗注册或昵称登录额度。
         return this.transaction(() => {
           let user = this.one('SELECT * FROM users WHERE nickname_key=?', key);
           if (path === '/api/register') {
             if (user) fail(409, '昵称已被使用');
             this.limit(`registered:${ip}`, 8, 3600000, '注册账号过多');
-            user = this.createUser({ nickname, password });
+            user = this.createUser({ nickname, password }, encoded);
           } else {
-            this.limit(`login:${key}`, 10, 15 * 60000, '登录尝试过多');
+            this.limit(loginKey, 10, 15 * 60000, '登录尝试过多');
             // 密码错误仍须提交失败计数，不能抛出异常触发回滚。
-            if (!verifyPassword(password, user)) return json({ error: '昵称或密码不正确' }, 401);
+            if (!verified || !user || user.id !== snapshot.id || user.password_hash !== snapshot.password_hash) return json({ error: '昵称或密码不正确' }, 401);
           }
-          this.rows('DELETE FROM limits WHERE key=? OR until<?', `login:${key}`, Date.now());
+          this.rows('DELETE FROM limits WHERE key=? OR until<?', loginKey, Date.now());
           this.rows('DELETE FROM sessions WHERE expires_at<?', Date.now());
           const token = newToken();
           this.rows('INSERT INTO sessions VALUES (?,?,?)', digest(token), user.id, Date.now() + SESSION_SECONDS * 1000);
@@ -311,19 +340,26 @@ export class Dianque {
       if (path === '/api/session' && method === 'GET') return json(user ? this.session(user) : { user: null });
       if (!user) fail(401, '请先登录');
       this.limit(`request:${user.id}`, 120);
-      if (path.startsWith('/api/admin/')) return this.admin(request, url, body, user);
+      if (path.startsWith('/api/admin/')) return await this.admin(request, url, body, user);
       if (path === '/api/password' && method === 'POST') {
         check(!user.active_room, '对局中禁止修改密码，请结束并确认结算后再修改');
         check(Object.keys(body).length === 2 && Object.keys(body).every((key) => ['currentPassword', 'newPassword'].includes(key)), '请填写原密码和新密码');
         const currentPassword = passwordValue(body.currentPassword), newPassword = passwordValue(body.newPassword);
         check(currentPassword !== newPassword, '新密码不能与原密码相同');
+        this.checkLimit(`password:${user.id}`, 10, '原密码验证次数过多');
+        const verified = await verifyPassword(currentPassword, user);
+        const encoded = verified ? await passwordHash(newPassword) : null;
         const response = this.transaction(() => {
+          const current = this.user(request);
+          if (!current || current.password_hash !== user.password_hash) fail(401, '请重新登录');
+          check(!current.active_room, '对局中禁止修改密码，请结束并确认结算后再修改');
           this.limit(`password:${user.id}`, 10, 15 * 60000, '原密码验证次数过多');
-          if (!verifyPassword(currentPassword, user)) return json({ error: '原密码不正确' }, 400);
-          const { salt, hash } = passwordHash(newPassword);
+          if (!verified) return json({ error: '原密码不正确' }, 400);
+          const { salt, hash } = encoded;
           this.rows('UPDATE users SET salt=?,password_hash=? WHERE id=?', salt, hash, user.id);
           this.rows('DELETE FROM sessions WHERE user_id=?', user.id);
-          this.rows('DELETE FROM limits WHERE key=? OR key=?', `password:${user.id}`, `login:${user.nickname_key}`);
+          this.rows('DELETE FROM limits WHERE key=?', `password:${user.id}`);
+          this.clearLoginLimits(user.nickname_key);
           return json({ ok: true }, 200, { 'Set-Cookie': cookie('', request, 0) });
         });
         if (response.ok) for (const ws of this.sockets(user.id)) ws.close(4001, '密码已修改，请重新登录');

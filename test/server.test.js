@@ -4,11 +4,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { digest } from '../server/auth.js';
 import WebSocket from 'ws';
 import { createApp } from '../server/index.js';
 
 const origin = 'https://dianque.test';
 const password = 'test-password-123';
+const loginKey = (name, ip = '192.0.2.1') => `login:${ip}:${digest(name.normalize('NFKC').trim().toLowerCase())}`;
 const adminId = '00000000-0000-4000-8000-000000000001';
 async function runtime(path) {
   const instance = await createApp({ database: path ? join(path, 'dianque.sqlite') : ':memory:', adminId, publicOrigin: origin });
@@ -201,39 +203,39 @@ test('立直音频：管理员上传、独立音量、稳定 ID 改名、播放�
   const path = await mkdtemp(join(tmpdir(), 'dianque-voice-'));
   let mf = await runtime(path);
   try {
-    assert.deepEqual((await request(mf, '/riichi-voices')).body, []);
+    assert.equal((await request(mf, '/riichi-voices')).status, 401);
     const { cookie } = await administrator(mf), member = await register(mf, '音频管理员');
     assert.equal((await request(mf, `/admin/users/${member.body.user.id}/role`, { cookie, body: { isAdmin: true } })).status, 200);
     const first = await upload(mf, cookie), second = await upload(mf, member.cookie, { name: '立直二', volume: 60 });
     assert.equal(first.status, 201); assert.equal(second.status, 201);
-    const voices = (await request(mf, '/riichi-voices')).body;
+    const voices = (await request(mf, '/riichi-voices', { cookie })).body;
     assert.equal(voices.length, 2); assert.deepEqual(Object.keys(voices[0]).sort(), ['id', 'name', 'size', 'url', 'volume']);
     const voice = first.body, route = `/admin/riichi-voices/${voice.id}`;
     assert.equal(voice.volume, 100); assert.equal(second.body.volume, 60);
-    const audio = await fetch(mf.url + voice.url);
-    assert.equal(audio.headers.get('Content-Type'), 'audio/wav'); assert.equal(audio.headers.get('Cache-Control'), 'no-store');
+    const audio = await fetch(mf.url + voice.url, { headers: { Cookie: cookie } });
+    assert.equal(audio.headers.get('Content-Type'), 'audio/wav'); assert.equal(audio.headers.get('Cache-Control'), 'private, max-age=3600, must-revalidate');
     assert.equal(audio.headers.get('X-Content-Type-Options'), 'nosniff');
     assert.deepEqual(Buffer.from(await audio.arrayBuffer()), wave());
-    const range = await fetch(mf.url + voice.url, { headers: { Range: 'bytes=0-43' } });
+    const range = await fetch(mf.url + voice.url, { headers: { Cookie: cookie, Range: 'bytes=0-43' } });
     assert.equal(range.status, 206); assert.equal(range.headers.get('Content-Range'), `bytes 0-43/${wave().length}`);
     assert.deepEqual(Buffer.from(await range.arrayBuffer()), wave().subarray(0, 44));
-    const suffix = await fetch(mf.url + voice.url, { headers: { Range: 'bytes=-4' } });
+    const suffix = await fetch(mf.url + voice.url, { headers: { Cookie: cookie, Range: 'bytes=-4' } });
     assert.equal(suffix.status, 206); assert.equal((await suffix.arrayBuffer()).byteLength, 4);
-    assert.equal((await fetch(mf.url + voice.url, { headers: { Range: 'bytes=99999-' } })).status, 416);
+    assert.equal((await fetch(mf.url + voice.url, { headers: { Cookie: cookie, Range: 'bytes=99999-' } })).status, 416);
     assert.equal((await request(mf, route, { cookie: member.cookie, body: { name: '新名称', volume: 35 } })).status, 200);
     await mf.close(); mf = await runtime(path);
-    const renamed = (await request(mf, '/riichi-voices')).body.find((item) => item.id === voice.id);
+    const renamed = (await request(mf, '/riichi-voices', { cookie })).body.find((item) => item.id === voice.id);
     assert.deepEqual(renamed, { ...voice, name: '新名称', volume: 35 });
-    assert.deepEqual(Buffer.from(await (await fetch(mf.url + voice.url)).arrayBuffer()), wave());
-    assert.equal((await request(mf, '/riichi-voices')).body.find((item) => item.id === second.body.id).volume, 60);
+    assert.deepEqual(Buffer.from(await (await fetch(mf.url + voice.url, { headers: { Cookie: cookie } })).arrayBuffer()), wave());
+    assert.equal((await request(mf, '/riichi-voices', { cookie })).body.find((item) => item.id === second.body.id).volume, 60);
     mf.app.rows("CREATE TRIGGER prevent_voice_delete BEFORE DELETE ON riichi_voices BEGIN SELECT RAISE(ABORT, 'test delete failure'); END");
     assert.equal((await request(mf, route, { cookie, method: 'DELETE' })).status, 500);
-    assert.equal((await fetch(mf.url + voice.url)).status, 200);
+    assert.equal((await fetch(mf.url + voice.url, { headers: { Cookie: cookie } })).status, 200);
     assert.equal(mf.app.one('SELECT volume FROM riichi_voice_volumes WHERE voice_id=?', voice.id).volume, 35);
     mf.app.rows('DROP TRIGGER prevent_voice_delete');
     assert.equal((await request(mf, route, { cookie: member.cookie, method: 'DELETE' })).status, 200);
-    assert.equal((await fetch(mf.url + voice.url)).status, 404);
-    assert.equal((await request(mf, '/riichi-voices')).body.length, 1);
+    assert.equal((await fetch(mf.url + voice.url, { headers: { Cookie: cookie } })).status, 404);
+    assert.equal((await request(mf, '/riichi-voices', { cookie })).body.length, 1);
     assert.equal(mf.app.one('SELECT volume FROM riichi_voice_volumes WHERE voice_id=?', voice.id), undefined);
     assert.equal((await request(mf, route, { cookie, body: { name: '已删除', volume: 100 } })).status, 404);
     assert.equal((await request(mf, route, { cookie, method: 'DELETE' })).status, 404);
@@ -251,7 +253,7 @@ test('立直音频：权限、来源、大小、格式、名称、音量与频�
     assert.equal((await upload(mf, cookie, { requestOrigin: 'https://evil.test' })).status, 403);
     for (const options of [{ data: Buffer.alloc(0) }, { data: Buffer.from('<html>not audio</html>') }, { format: 'mp3' }, { format: 'html' }, { name: '' }, { name: 'x'.repeat(61) }, { name: '\u0000bad' }, { volume: -1 }, { volume: 101 }, { volume: 50.5 }, { volume: '' }, { volume: 'loud' }]) assert.equal((await upload(mf, cookie, options)).status, 400);
     assert.equal((await upload(mf, cookie, { data: Buffer.alloc(5 * 1024 * 1024 + 1) })).status, 413);
-    assert.deepEqual((await request(mf, '/riichi-voices')).body, []);
+    assert.deepEqual((await request(mf, '/riichi-voices', { cookie })).body, []);
     const voice = (await upload(mf, cookie, { name: '../仅为显示名称' })).body, route = `/admin/riichi-voices/${voice.id}`;
     for (const method of ['POST', 'DELETE']) {
       const options = { method, ...(method === 'POST' ? { body: { name: '变更', volume: 20 } } : {}) };
@@ -262,13 +264,13 @@ test('立直音频：权限、来源、大小、格式、名称、音量与频�
     for (const body of [{}, { name: '缺少音量' }, { name: '', volume: 100 }, { name: 'x'.repeat(61), volume: 100 }, { name: 123, volume: 100 }, { name: 'ok', volume: 100, extra: true }, ...[-1, 101, 0.5, '50', null, true].map((volume) => ({ name: 'ok', volume }))]) assert.equal((await request(mf, route, { cookie, body })).status, 400);
     for (const volume of [0, 100]) {
       assert.equal((await request(mf, route, { cookie, body: { name: voice.name, volume } })).status, 200);
-      assert.equal((await request(mf, '/riichi-voices')).body.find((item) => item.id === voice.id).volume, volume);
+      assert.equal((await request(mf, '/riichi-voices', { cookie })).body.find((item) => item.id === voice.id).volume, volume);
     }
     mf.app.rows("CREATE TRIGGER prevent_voice_volume BEFORE INSERT ON riichi_voice_volumes BEGIN SELECT RAISE(ABORT, 'test volume failure'); END");
     assert.equal((await request(mf, route, { cookie, body: { name: '不应保存', volume: 40 } })).status, 500);
     assert.equal(mf.app.one('SELECT name FROM riichi_voices WHERE id=?', voice.id).name, voice.name);
     mf.app.rows('DROP TRIGGER prevent_voice_volume');
-    assert.equal((await fetch(mf.url + voice.url)).status, 200);
+    assert.equal((await fetch(mf.url + voice.url, { headers: { Cookie: cookie } })).status, 200);
     for (const [format, header] of [['mp3', 'ID3'], ['ogg', 'OggS'], ['m4a', '0000ftyp'], ['aac', Buffer.from([0xff, 0xf1])], ['mp3', Buffer.from([0xff, 0xfb])]]) {
       const data = Buffer.alloc(16); Buffer.from(header).copy(data);
       assert.equal((await upload(mf, cookie, { data, format })).status, 201, format);
@@ -276,7 +278,66 @@ test('立直音频：权限、来源、大小、格式、名称、音量与频�
     mf.app.rows('UPDATE limits SET count=30 WHERE key=?', `voice-upload:${adminId}`);
     const limited = await upload(mf, cookie);
     assert.equal(limited.status, 429); assert.ok(Number(limited.headers.get('Retry-After')) > 0);
-    assert.equal((await request(mf, '/riichi-voices')).body.length, 6);
+    assert.equal((await request(mf, '/riichi-voices', { cookie })).body.length, 6);
+  } finally { await mf.close(); }
+});
+
+test('安全响应头和音频下载：登录、范围、缓存与按用户和来源计量', async () => {
+  const mf = await runtime();
+  try {
+    const { cookie } = await administrator(mf);
+    const voice = (await upload(mf, cookie)).body;
+    const headers = { Cookie: cookie, 'X-Forwarded-For': '192.0.2.1' };
+    const get = (extra = {}, method = 'GET') => fetch(mf.url + voice.url, { method, headers: { ...headers, ...extra } });
+    const health = await request(mf, '/health');
+    assert.equal(health.headers.get('Strict-Transport-Security'), 'max-age=31536000');
+    assert.equal(health.headers.get('X-Frame-Options'), 'DENY');
+    assert.equal(health.headers.get('Cross-Origin-Resource-Policy'), 'same-origin');
+    assert.match(health.headers.get('Content-Security-Policy'), /script-src 'self';/);
+    assert.match(health.headers.get('Content-Security-Policy'), /frame-ancestors 'none'/);
+    assert.equal((await fetch(mf.url + voice.url)).status, 401);
+    const userId = mf.app.user(new Request(origin, { headers })).id;
+    const byteKey = `media-bytes:${userId}`, ipKey = 'media-ip-bytes:192.0.2.1';
+    mf.app.rows('INSERT INTO limits VALUES (?,?,?)', byteKey, 30 * 1024 * 1024 - 4, Date.now() + 60000);
+    const partial = await get({ Range: 'bytes=0-3' });
+    assert.equal(partial.status, 206); assert.equal((await partial.arrayBuffer()).byteLength, 4);
+    const etag = partial.headers.get('ETag');
+    const blocked = await get({ Range: 'bytes=4-4' });
+    assert.equal(blocked.status, 429); assert.ok(Number(blocked.headers.get('Retry-After')) > 0);
+    assert.match(blocked.headers.get('Content-Type'), /application\/json/);
+    assert.equal((await get({ 'If-None-Match': etag, 'Cache-Control': 'max-age=0' })).status, 304);
+    const head = await get({}, 'HEAD');
+    assert.equal(head.status, 200); assert.equal((await head.arrayBuffer()).byteLength, 0);
+    assert.equal(mf.app.one('SELECT count FROM limits WHERE key=?', byteKey).count, 30 * 1024 * 1024);
+    mf.app.rows('DELETE FROM limits WHERE key=?', byteKey);
+    mf.app.rows('UPDATE limits SET count=? WHERE key=?', 60 * 1024 * 1024, ipKey);
+    assert.equal((await get({ Range: 'bytes=0-3' })).status, 429);
+    assert.equal(mf.app.one('SELECT count FROM limits WHERE key=?', byteKey), undefined, '来源配额失败时用户额度一起回滚');
+    mf.app.rows('DELETE FROM limits WHERE key=?', ipKey);
+    assert.equal((await get({ Range: 'bytes=0-1,4-5' })).status, 416);
+    assert.equal((await get({ Range: 'bad-range' })).status, 416);
+    mf.app.rows('UPDATE limits SET count=120 WHERE key=?', 'media-requests:192.0.2.1');
+    assert.equal((await get({}, 'HEAD')).status, 429);
+  } finally { await mf.close(); }
+});
+
+test('异步登录：校验期间撤销密码不能签发旧凭据的新会话', async (t) => {
+  const mf = await runtime();
+  try {
+    const user = await register(mf, '撤销中登录');
+    const one = mf.app.one.bind(mf.app);
+    let snapshot;
+    const ready = new Promise(resolve => { snapshot = resolve; });
+    t.mock.method(mf.app, 'one', (query, ...args) => {
+      const result = one(query, ...args);
+      if (query === 'SELECT * FROM users WHERE nickname_key=?') snapshot();
+      return result;
+    });
+    const pending = request(mf, '/login', { body: { nickname: '撤销中登录', password } });
+    await ready;
+    mf.app.rows('UPDATE users SET password_hash=? WHERE id=?', '0'.repeat(64), user.body.user.id);
+    assert.equal((await pending).status, 401);
+    assert.equal(one('SELECT COUNT(*) AS n FROM sessions').n, 1);
   } finally { await mf.close(); }
 });
 
@@ -307,7 +368,7 @@ test('自行修改密码：原密码校验、请求边界、故障回滚和全�
     assert.equal((await db.one('SELECT count FROM limits WHERE key=?', `password:${id}`)).count, 1);
     assert.equal((await request(mf, '/session', { cookie: second.cookie })).body.user.id, id);
     await db.one('DROP TRIGGER prevent_change');
-    await db.one('INSERT INTO limits VALUES (?,?,?)', 'login:改密用户', 10, Date.now() + 900000);
+    await db.one('INSERT INTO limits VALUES (?,?,?)', loginKey('改密用户'), 10, Date.now() + 900000);
     ws = await socket(mf, room.code, cookie);
     let timer;
     const closed = new Promise((resolve, reject) => {
@@ -439,7 +500,7 @@ test('管理员重置密码：事务回滚、撤销全部会话和连接、解�
     assert.equal((await db.one('SELECT password_hash FROM users WHERE id=?', id)).password_hash, previousHash);
     assert.equal((await request(mf, `/rooms/${room.code}`, { cookie: member.cookie })).body.players[0].name, '重置测试');
     await db.one('DROP TRIGGER prevent_reset');
-    await db.one('INSERT INTO limits VALUES (?,?,?)', 'login:重置后', 10, Date.now() + 900000);
+    await db.one('INSERT INTO limits VALUES (?,?,?)', loginKey('重置后'), 10, Date.now() + 900000);
     await db.one('INSERT INTO limits VALUES (?,?,?)', `password:${id}`, 10, Date.now() + 900000);
     assert.equal((await request(mf, `/admin/users/${id}`, { cookie, body })).status, 200);
     assert.equal(await db.one('SELECT count FROM limits WHERE key=?', `password:${id}`), undefined);
@@ -526,7 +587,7 @@ test('注册限流：旧失败计数不阻塞注册，服务端故障回滚，�
   try {
     const db = mf.app;
     await db.one('INSERT INTO limits VALUES (?,?,?)', 'register:192.0.2.1', 8, Date.now() + 3600000);
-    await db.one('INSERT INTO limits VALUES (?,?,?)', 'login:注册测试', 10, Date.now() + 900000);
+    await db.one('INSERT INTO limits VALUES (?,?,?)', loginKey('注册测试'), 10, Date.now() + 900000);
     await db.one("CREATE TRIGGER fail_session BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'test session failure'); END");
     const failed = await request(mf, '/register', { body: { nickname: '注册测试', password } });
     assert.equal(failed.status, 500); assert.equal(failed.cookie, undefined);
@@ -538,7 +599,7 @@ test('注册限流：旧失败计数不阻塞注册，服务端故障回滚，�
     for (let i = 0; i < 10; i++) {
       assert.equal((await request(mf, '/register', { body: { nickname: '注册测试', password } })).status, 409);
     }
-    assert.equal(await db.one('SELECT * FROM limits WHERE key=?', 'login:注册测试'), undefined);
+    assert.equal(await db.one('SELECT * FROM limits WHERE key=?', loginKey('注册测试')), undefined);
     for (let i = 0; i < 7; i++) await register(mf, `额度测试${i}`);
     const quota = await db.one('SELECT * FROM limits WHERE key=?', 'registered:192.0.2.1');
     assert.equal(quota.count, 8);
@@ -555,32 +616,33 @@ test('注册限流：旧失败计数不阻塞注册，服务端故障回滚，�
   } finally { await mf.close(); }
 });
 
-test('登录限流：服务端故障不扣昵称额度，错误密码仍计数，限流不延长等待，到期恢复', async () => {
+test('登录限流：按来源和昵称隔离，故障不扣额度，限流不延长等待，到期恢复', async () => {
   const mf = await runtime();
   try {
     await register(mf, '登录测试');
     const db = mf.app;
     await db.one("CREATE TRIGGER fail_session BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'test session failure'); END");
     assert.equal((await request(mf, '/login', { body: { nickname: '登录测试', password } })).status, 500);
-    assert.equal(await db.one('SELECT * FROM limits WHERE key=?', 'login:登录测试'), undefined);
+    assert.equal(await db.one('SELECT * FROM limits WHERE key=?', loginKey('登录测试')), undefined);
     assert.equal((await db.one('SELECT COUNT(*) AS n FROM sessions')).n, 1);
     await db.one('DROP TRIGGER fail_session');
     for (let i = 0; i < 10; i++) {
       assert.equal((await request(mf, '/login', { body: { nickname: '登录测试', password: 'wrong-password' } })).status, 401);
     }
-    const quota = await db.one('SELECT * FROM limits WHERE key=?', 'login:登录测试');
+    const quota = await db.one('SELECT * FROM limits WHERE key=?', loginKey('登录测试'));
     assert.equal(quota.count, 10);
     const blocked = await request(mf, '/login', { body: { nickname: '登录测试', password } });
     assert.equal(blocked.status, 429); assert.equal(blocked.cookie, undefined);
     assert.match(blocked.body.error, /^登录尝试过多，请在 \d+ 分钟后重试$/);
     assert.ok(Number(blocked.headers.get('Retry-After')) > 0 && Number(blocked.headers.get('Retry-After')) <= 900);
-    const after = await db.one('SELECT * FROM limits WHERE key=?', 'login:登录测试');
+    const after = await db.one('SELECT * FROM limits WHERE key=?', loginKey('登录测试'));
     assert.equal(after.count, quota.count); assert.equal(after.until, quota.until);
-    await db.one('UPDATE limits SET until=? WHERE key=?', Date.now() + 30000, 'login:登录测试');
+    assert.equal((await request(mf, '/login', { body: { nickname: '登录测试', password }, headers: { 'X-Forwarded-For': '192.0.2.2' } })).status, 200, '另一来源不能锁住账号');
+    await db.one('UPDATE limits SET until=? WHERE key=?', Date.now() + 30000, loginKey('登录测试'));
     assert.match((await request(mf, '/login', { body: { nickname: '登录测试', password } })).body.error, /\d+ 秒后重试$/);
-    await db.one('UPDATE limits SET until=? WHERE key=?', Date.now() - 1, 'login:登录测试');
+    await db.one('UPDATE limits SET until=? WHERE key=?', Date.now() - 1, loginKey('登录测试'));
     assert.equal((await request(mf, '/login', { body: { nickname: '登录测试', password } })).status, 200);
-    assert.equal(await db.one('SELECT * FROM limits WHERE key=?', 'login:登录测试'), undefined);
+    assert.equal(await db.one('SELECT * FROM limits WHERE key=?', loginKey('登录测试')), undefined);
   } finally { await mf.close(); }
 });
 

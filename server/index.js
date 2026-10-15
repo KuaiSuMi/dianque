@@ -22,6 +22,10 @@ export async function createApp({ database = resolve(root, 'data/dianque.sqlite'
   http.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    if (publicOrigin.startsWith('https:')) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+    if (!dev) res.setHeader('Content-Security-Policy', `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ${publicOrigin.replace(/^http/, 'ws')}; worker-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`);
     next();
   });
   function webRequest(req) {
@@ -43,7 +47,8 @@ export async function createApp({ database = resolve(root, 'data/dianque.sqlite'
     const status = error instanceof GameError ? 400 : error.status || 500;
     if (status >= 500) console.error(error);
     if (error.retryAfter) res.set('Retry-After', String(error.retryAfter));
-    res.set('Cache-Control', 'no-store').status(status).json({ error: status >= 500 ? '服务暂时不可用，请重试' : status === 413 ? '请求过大' : error.type === 'entity.parse.failed' ? '请求格式错误' : error.message });
+    res.removeHeader('Content-Range');
+    res.set('Cache-Control', 'no-store').type('application/json').status(status).json({ error: status >= 500 ? '服务暂时不可用，请重试' : status === 413 ? '请求过大' : error.type === 'entity.parse.failed' ? '请求格式错误' : error.message });
   });
   server.on('upgrade', async (req, socket, head) => {
     if (!req.url.startsWith('/api/')) return dev ? undefined : socket.destroy();

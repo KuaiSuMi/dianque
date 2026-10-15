@@ -1,4 +1,4 @@
-const CACHE = 'dianque-shell-v4';
+const CACHE = 'dianque-shell-v5';
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(['/', '/icon-32.png?v=3', '/icon-192.png?v=3', '/icon-512.png?v=3', '/manifest.webmanifest'])));
 });
@@ -7,7 +7,7 @@ self.addEventListener('activate', (event) => {
 });
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  if (url.origin !== self.location.origin || event.request.method !== 'GET' || url.pathname.startsWith('/api/')) return;
+  if (url.origin !== self.location.origin || event.request.method !== 'GET' || url.pathname.startsWith('/api/') || url.pathname.startsWith('/media/')) return;
   event.respondWith(fetch(event.request).then((response) => {
     if (response.ok) { const copy = response.clone(); event.waitUntil(caches.open(CACHE).then((cache) => cache.put(event.request, copy))); }
     return response;
