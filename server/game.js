@@ -146,10 +146,10 @@ export function applyAction(room, actorId, action) {
     room.history = [{ state: initialState(room.config, action.playerCount), entry: null }];
     room.cursor = 0;
   } else if (action.type === 'table-settings') {
-    check(player.id === room.hostId, '只有房主可以修改牌桌设置');
-    check(state.status === 'playing', '请在对局中修改牌桌设置');
+    check(['waiting', 'playing', 'ended'].includes(state.status), '请先确认对战结算，再修改牌桌设置');
     check(!room.pending && Object.keys(room.drawVotes).length === 0, '请先完成或取消当前结算，再修改牌桌设置');
     check(typeof action.tsumoConfirm === 'boolean' && typeof action.autoDice === 'boolean', '确认和骰子开关须为布尔值');
+    prepareNextMatch(room);
     room.config.tsumoConfirm = action.tsumoConfirm;
     room.config.autoDice = action.autoDice;
   } else if (action.type === 'start') {
@@ -237,7 +237,7 @@ export function applyAction(room, actorId, action) {
       });
       const payers = [...new Set(transfers.map((t) => t.from))];
       const winners = [...new Set(transfers.map((t) => t.to))];
-      if (action.mode === 'ron') check(payers.length === 1 && payers[0] === seat && winners.length === transfers.length, '荣和须由放铳者向不同的和牌者支付');
+      if (action.mode === 'ron') check(payers.length === 1 && (payers[0] === seat || (winners.length === 1 && winners[0] === seat)) && winners.length === transfers.length, '荣和须由放铳者向不同的和牌者支付，或由单一和牌者请求收款');
       else check(transfers.length === count - 1 && payers.length === count - 1 && winners.length === 1 && (winners[0] === seat || payers.includes(seat)), `自摸必须包含${count === 3 ? '两' : '三'}家向同一人的支付`);
       room.pending = { id: randomUUID(), mode: action.mode, createdBy: seat, transfers, payers, winners, approved: payers.includes(seat) ? [seat] : [], received: [] };
     } else if (action.type === 'approve' || action.type === 'receive' || action.type === 'cancel') {

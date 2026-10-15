@@ -597,15 +597,15 @@ test('对局及结算期间禁止本人和管理员改密码；牌桌开关广�
     const host = await register(mf, '密码房主'), guest = await register(mf, '密码玩家'), third = await register(mf, '密码第三家');
     let room = (await request(mf, '/rooms', { cookie: host.cookie, body: { playerCount: 3 } })).body;
     for (const cookie of [guest.cookie, third.cookie]) room = (await request(mf, `/rooms/${room.code}/join`, { cookie, method: 'POST' })).body;
-    async function act(type, fields = {}) {
-      const result = await request(mf, `/rooms/${room.code}/action`, { cookie: host.cookie, body: { type, revision: room.revision, roundId: room.state.roundId, requestId: randomUUID(), ...fields } });
+    async function act(type, fields = {}, cookie = host.cookie) {
+      const result = await request(mf, `/rooms/${room.code}/action`, { cookie, body: { type, revision: room.revision, roundId: room.state.roundId, requestId: randomUUID(), ...fields } });
       assert.equal(result.status, 200, JSON.stringify(result.body)); room = result.body;
     }
     await act('start');
     ws = await socket(mf, room.code, guest.cookie);
     const update = message(ws, (r) => r.config?.autoDice && r.config?.tsumoConfirm);
     const before = structuredClone(room.state);
-    await act('table-settings', { autoDice: true, tsumoConfirm: true });
+    await act('table-settings', { autoDice: true, tsumoConfirm: true }, guest.cookie);
     assert.deepEqual((await update).config, room.config); assert.deepEqual(room.state, before);
     assert.deepEqual((await request(mf, `/rooms/${room.code}`, { cookie: guest.cookie })).body.config, room.config);
     const id = guest.body.user.id;

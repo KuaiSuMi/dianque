@@ -10,7 +10,7 @@ export function Dice({ dice }) {
   </div>;
 }
 
-export function useRiichiVoice(room) {
+export function useRiichiVoice(room, me) {
   const [voices, setVoices] = useState([]);
   const [selected, setSelected] = useState(() => { try { return localStorage.getItem('riichi-voice') || ''; } catch { return ''; } });
   const [error, setError] = useState('');
@@ -42,15 +42,15 @@ export function useRiichiVoice(room) {
   useEffect(() => {
     const fresh = room.events.filter((event) => !seen.current.has(event.id));
     room.events.forEach((event) => seen.current.add(event.id));
-    if (fresh.some((event) => event.type === 'riichi' && !event.undone && Date.now() - Date.parse(event.at) < 10000)) play(voice);
-  }, [room.events]);
+    if (fresh.some((event) => event.type === 'riichi' && event.seat === me.seat && !event.undone && Date.now() - Date.parse(event.at) < 10000)) play(voice);
+  }, [room.events, me.seat]);
   return { voices, selected: voice?.id || '', choose, play: () => play(voice), refresh, error };
 }
 
 export function VoiceSettings({ voice }) {
   useEffect(() => { const abort = new AbortController(); voice.refresh(abort.signal); return () => abort.abort(); }, [voice.refresh]);
   return <section className="voice-settings"><label>立直语音<select value={voice.selected} onChange={(e) => voice.choose(e.target.value)}><option value="">关闭</option>{voice.voices.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-    <p className="field-help">本设备的立直播报声音，选择后可试听。</p>
+    <p className="field-help">仅自己立直时在本设备播放，选择后可试听。</p>
     {voice.voices.length ? <button className="text-button" disabled={!voice.voices.some((item) => item.id === voice.selected)} onClick={voice.play}>试听语音</button> : <p className="field-help">音频上传后，可在这里选择立直语音。</p>}
     {voice.error && <p className="warning-text" role="status">{voice.error}</p>}
   </section>;

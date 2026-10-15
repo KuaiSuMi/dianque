@@ -163,7 +163,7 @@ function ShareSheet({ room, close, notify }) {
   return <Sheet title="邀请牌友入座" close={close}><div className="share-content">{qr && <img src={qr} alt={`房间 ${room.code} 的加入二维码`} width="220" height="220" />}<strong className="room-code-big">{room.code}</strong><small>按{room.config.playerCount === 3 ? '东南西' : '东南西北'}顺序入座</small></div><label>邀请地址<input id="room-url" value={url} readOnly onFocus={(e) => e.target.select()} /></label><Button className="primary full" icon={Copy} onClick={copy}>复制邀请地址</Button>{['localhost', '127.0.0.1'].includes(location.hostname) && <p className="warning-text">当前是本机地址。请用启动终端显示的局域网 IP 打开，再邀请其他手机。</p>}</Sheet>;
 }
 
-function WaitingRoom({ room, me, act, busy, share, records, configure, changePassword }) {
+function WaitingRoom({ room, me, act, busy, share, records, configure, settings, changePassword }) {
   const ended = room.state.status === 'ended';
   const count = room.config.playerCount;
   const reduce = useReducedMotion();
@@ -176,7 +176,7 @@ function WaitingRoom({ room, me, act, busy, share, records, configure, changePas
     <p className="field-help">点击空位移动，点击其他玩家交换座位。</p>
     <AnimatePresence>{destination && <Sheet title={destination.name ? '交换座位' : '移动座位'} close={() => setDestination(null)}><p className="confirm-copy">{destination.name ? `与 ${destination.name} 交换座位？` : `移动到${WINDS[(destination.seat - room.config.startDealer + count) % count]}家空位？`}</p><Button className="primary full" disabled={busy} onClick={async () => { if (await act({ type: 'seat', seat: destination.seat })) setDestination(null); }}>确认换座</Button></Sheet>}</AnimatePresence>
     <div className="waiting-actions">{room.players.length < count && <Button icon={Share2} onClick={share}>邀请牌友 · {room.players.length}/{count}</Button>}{me.id === room.hostId ? <><Button disabled={busy || room.players.length < count} onClick={async () => { if (await act({ type: 'shuffle' })) setShuffles((n) => n + 1); }}><motion.span className="shuffle-icon" aria-hidden="true" animate={{ transform: reduce ? 'none' : `rotate(${shuffles * 180}deg)` }} transition={{ duration: 0.25, ease: [0.23, 1, 0.32, 1] }}><Shuffle size={18} /></motion.span>随机选座</Button><Button className="primary" loading={busy} disabled={busy || room.players.length < count} onClick={() => act({ type: 'start' })} icon={ArrowRight}>开始对局</Button></> : <p>等待房主开始对局</p>}</div>
-    <div className="waiting-tools"><button className="text-button" onClick={records}><History size={17} />对战记录</button>{me.id === room.hostId && <button className="text-button" disabled={busy} onClick={configure}><Info size={17} />房间设置</button>}<button className="text-button" onClick={changePassword}>修改密码</button></div>
+    <div className="waiting-tools"><button className="text-button" onClick={records}><History size={17} />对战记录</button>{me.id === room.hostId && <button className="text-button" disabled={busy} onClick={configure}><Info size={17} />房间设置</button>}<button className="text-button" onClick={settings}><Info size={17} />牌桌设置</button><button className="text-button" onClick={changePassword}>修改密码</button></div>
   </section>;
 }
 
@@ -203,14 +203,16 @@ function PointPatterns({ name, text }) {
 
 function PaymentSheet({ room, me, target, close, act, busy }) {
   const isSelf = target === me.seat;
-  const [mode, setMode] = useState(isSelf ? 'tsumo' : 'ron');
+  const mode = isSelf ? 'tsumo' : 'ron';
+  const [direction, setDirection] = useState('pay');
+  const receiving = direction === 'receive';
   const [entry, setEntry] = useState('quick');
   const [amounts, setAmounts] = useState({});
   const [recipients, setRecipients] = useState([target]);
   const [error, setError] = useState('');
   const others = room.players.filter((p) => p.seat !== me.seat);
-  const winner = room.players[target];
-  const rows = mode === 'ron' ? others.filter((p) => recipients.includes(p.seat)).map((p) => ({ player: p, from: me.seat, to: p.seat })) : room.players.filter((p) => p.seat !== target).map((p) => ({ player: p, from: p.seat, to: target }));
+  const winner = receiving ? me : room.players[target];
+  const rows = receiving ? [{ player: me, from: target, to: me.seat }] : mode === 'ron' ? others.filter((p) => recipients.includes(p.seat)).map((p) => ({ player: p, from: me.seat, to: p.seat })) : room.players.filter((p) => p.seat !== target).map((p) => ({ player: p, from: p.seat, to: target }));
   const transfers = paymentTransfers({ mode, entry, rows, amounts, honba: room.state.honba, playerCount: room.config.playerCount });
   const total = transfers.reduce((sum, t) => sum + (Number.isFinite(t.amount) ? t.amount : 0), 0);
   const tsumoPoints = TSUMO_POINTS[target === room.dealer ? 'dealer' : 'nonDealer'];
@@ -223,12 +225,13 @@ function PaymentSheet({ room, me, target, close, act, busy }) {
     if (transfers.some((t) => !Number.isSafeInteger(t.amount) || t.amount <= 0 || t.amount > 1000000 || t.amount % 100 !== 0)) { setError('每笔点数请填 100～1000000 之间的整百数'); return; }
     if (await act({ type: 'propose', mode, transfers })) close();
   }
-  return <Sheet title={isSelf ? '自摸结算' : `向 ${winner.name} 支付`} close={close}>
-    {!isSelf && <Segmented className="compact-tabs" label="支付方式" value={mode} onChange={(value) => { setMode(value); setAmounts({}); setError(''); }} options={[['ron', '荣和支付'], ['tsumo', '对方自摸']]} />}
+  return <Sheet title={isSelf ? '自摸结算' : receiving ? `${room.players[target].name} 向我支付` : `向 ${winner.name} 支付`} close={close}>
+    {!isSelf && <Segmented className="compact-tabs" label="支付方式" value={direction} onChange={(value) => { setDirection(value); setAmounts({}); setError(''); }} options={[['pay', '我方支付'], ['receive', '对方支付']]} />}
+    {receiving && <p className="field-help">由 {room.players[target].name} 确认付款，你确认收款后结算并换局。</p>}
     <Segmented className="amount-entry-tabs" label="点数输入方式" value={entry} onChange={changeEntry} options={[['quick', '常规点数'], ['custom', '自定义']]} />
     <p className="payment-help">{room.state.honba} 本场<span>{entry === 'quick' ? mode === 'tsumo' ? `每家自动加 ${fmt(room.state.honba * 100)} 点` : `自动加 ${fmt(room.state.honba * 300)} 点` : '请填写已含本场的金额'}</span></p>
     <form className="payment-form" onSubmit={submit} noValidate>
-      <AnimatePresence initial={false}>{mode === 'ron' && <Expanding key="winners"><fieldset className="winner-select"><legend>和牌者（可多选）</legend>{others.map((p) => <label className="check-label" key={p.id}><input type="checkbox" checked={recipients.includes(p.seat)} onChange={(e) => setRecipients(e.target.checked ? [...recipients, p.seat] : recipients.filter((s) => s !== p.seat))} /><span>{p.name}</span></label>)}</fieldset></Expanding>}</AnimatePresence>
+      <AnimatePresence initial={false}>{mode === 'ron' && !receiving && <Expanding key="winners"><fieldset className="winner-select"><legend>和牌者（可多选）</legend>{others.map((p) => <label className="check-label" key={p.id}><input type="checkbox" checked={recipients.includes(p.seat)} onChange={(e) => setRecipients(e.target.checked ? [...recipients, p.seat] : recipients.filter((s) => s !== p.seat))} /><span>{p.name}</span></label>)}</fieldset></Expanding>}</AnimatePresence>
       <AnimatePresence initial={false}>{mode === 'tsumo' && entry === 'quick' && <Expanding key="tsumo-points"><p className="amount-caption">{target === room.dealer ? '庄家自摸 · 每家支付' : '子家自摸 · 子家 / 庄家'}</p><AmountChoices label="自摸常规点数" tsumo options={tsumoPoints.map((points, index) => [index, target === room.dealer ? fmt(points[0]) : `${fmt(points[0])} / ${fmt(points[1])}`])} value={selectedTsumo} onChange={(index) => { setAmounts(tsumoAmounts(rows, room.dealer, tsumoPoints[index])); setError(''); }} /><PointPatterns name={winner.name} text={pointPatterns('tsumo', target === room.dealer, tsumoPoints[selectedTsumo])} /></Expanding>}</AnimatePresence>
       <div className="payment-rows"><AnimatePresence initial={false}>{rows.map(({ player: p }, index) => <Expanding className="payment-recipient" key={p.id}>
         <motion.div key={`${mode}-${entry}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.16 }}>
@@ -239,8 +242,8 @@ function PaymentSheet({ room, me, target, close, act, busy }) {
         </motion.div>
       </Expanding>)}</AnimatePresence></div>
       <AnimatePresence initial={false}>{entry === 'quick' && mode === 'ron' && rows.length > 1 && <Expanding key="honba-hint"><p className="field-help">本场只加给下家方向最近的和牌者。</p></Expanding>}</AnimatePresence>
-      <div className="payment-total"><span>支付合计</span><strong>{fmt(total)}<small> 点</small></strong></div><p className="field-help">供托 {fmt(room.state.pot * 1000)} 点另计，收款确认后换局。</p>
-      <AnimatePresence initial={false}>{error && <Expanding key="error"><p role="alert" className="warning-text">{error}</p></Expanding>}</AnimatePresence><Button className="primary full" icon={ArrowRight} loading={busy} disabled={busy}>发起结算</Button>
+      <div className="payment-total"><span>{receiving ? '对方支付合计' : '支付合计'}</span><strong>{fmt(total)}<small> 点</small></strong></div><p className="field-help">供托 {fmt(room.state.pot * 1000)} 点另计，收款确认后换局。</p>
+      <AnimatePresence initial={false}>{error && <Expanding key="error"><p role="alert" className="warning-text">{error}</p></Expanding>}</AnimatePresence><Button className="primary full" icon={ArrowRight} loading={busy} disabled={busy}>{receiving ? '请求对方支付' : '发起结算'}</Button>
     </form>
   </Sheet>;
 }
@@ -375,7 +378,7 @@ function SettlementScoresSheet({ room, act, busy, close }) {
 }
 
 function Table({ room, me, act, busy, connected, notify, home, openAdmin, adminOpen, changePassword }) {
-  const voice = useRiichiVoice(room);
+  const voice = useRiichiVoice(room, me);
   const [sheet, setSheet] = useState(null);
   const [target, setTarget] = useState(null);
   const current = room.state;
@@ -410,7 +413,7 @@ function Table({ room, me, act, busy, connected, notify, home, openAdmin, adminO
     {['waiting', 'ended'].includes(current.status) && <AdminEntry open={openAdmin} />}
     <Announcements adminOpen={adminOpen} />
     {!connected && <div role="status" className="offline-banner">连接中断，重连前暂停操作。</div>}
-    {current.status === 'settling' ? <Settlement room={room} me={me} act={act} busy={locked} edit={() => setSheet('settlement-scores')} records={() => setSheet('records')} undo={() => setSheet('undo')} redo={() => setSheet('redo')} /> : current.status !== 'playing' ? <WaitingRoom room={room} me={me} act={act} busy={locked} share={() => setSheet('share')} records={() => setSheet('records')} configure={() => setSheet('configure')} changePassword={changePassword} /> : <>
+    {current.status === 'settling' ? <Settlement room={room} me={me} act={act} busy={locked} edit={() => setSheet('settlement-scores')} records={() => setSheet('records')} undo={() => setSheet('undo')} redo={() => setSheet('redo')} /> : current.status !== 'playing' ? <WaitingRoom room={room} me={me} act={act} busy={locked} share={() => setSheet('share')} records={() => setSheet('records')} configure={() => setSheet('configure')} settings={() => setSheet('settings')} changePassword={changePassword} /> : <>
       <div className="table-toolbar"><div><span>{count === 3 ? '三人' : '四人'}{room.config.length === 'south' ? '南' : '东'}</span>{me.id === room.hostId && <button className="text-button end-game-button" disabled={locked || pending} onClick={() => act({ type: 'end' })}>结束对战</button>}</div><div className="history-buttons as-glass as-glass-group" data-adapt="off" data-lens="off"><button className="as-item" aria-label="撤销上一步" title="撤销上一步" disabled={locked || !room.canUndo || pending} onClick={() => setSheet('undo')}><Undo2 size={18} /><span>撤销</span></button><button className="as-item" aria-label="重做上一步" title="重做上一步" disabled={locked || !room.canRedo || pending} onClick={() => setSheet('redo')}><Redo2 size={18} /><span>重做</span></button></div></div>
       {(room.pending || Object.keys(room.drawVotes).length > 0) && <button className="pending-alert" onClick={() => setSheet(room.pending ? 'pending' : 'draw')}><span><ArrowDownLeft size={17} />{room.pending ? '待确认支付' : `流局确认 ${Object.keys(room.drawVotes).length}/${count}`}</span><span>查看<ChevronRight size={16} /></span></button>}
       <Dice dice={current.dice} />
@@ -428,11 +431,11 @@ function Table({ room, me, act, busy, connected, notify, home, openAdmin, adminO
     {sheet === 'adjust' && me.id === room.hostId && <RoundSettingsSheet key="adjust" room={room} act={act} busy={locked || pending} close={close} />}
     {sheet === 'settlement-scores' && me.id === room.hostId && current.status === 'settling' && <SettlementScoresSheet key="settlement-scores" room={room} act={act} busy={locked} close={close} />}
     {sheet === 'settings' && <Sheet key="settings" title="牌桌设置" close={close}>
-      <div className="settings-actions">{me.id === room.hostId && <Button className="full" disabled={locked || pending} onClick={() => setSheet('adjust')}>修改当前场况<ChevronRight size={17} /></Button>}</div>
-      <RuleSwitches count={count} tsumoConfirm={room.config.tsumoConfirm} autoDice={room.config.autoDice} playing disabled={locked || pending || me.id !== room.hostId}
+      <div className="settings-actions">{current.status === 'playing' && me.id === room.hostId && <Button className="full" disabled={locked || pending} onClick={() => setSheet('adjust')}>修改当前场况<ChevronRight size={17} /></Button>}</div>
+      <RuleSwitches count={count} tsumoConfirm={room.config.tsumoConfirm} autoDice={room.config.autoDice} playing={current.status === 'playing'} disabled={locked || pending}
         setTsumoConfirm={(tsumoConfirm) => act({ type: 'table-settings', tsumoConfirm, autoDice: room.config.autoDice })}
         setAutoDice={(autoDice) => act({ type: 'table-settings', autoDice, tsumoConfirm: room.config.tsumoConfirm })} />
-      <p className="field-help">{me.id !== room.hostId ? '以上规则由房主修改，全桌同步。' : pending ? '先完成或取消当前结算，再修改牌桌设置。' : '修改后全桌同步。'}</p>
+      <p className="field-help">{pending ? '先完成或取消当前结算，再修改牌桌设置。' : '房间内所有人均可修改，全桌同步。'}</p>
       <div className="settings-row"><span>保持屏幕常亮<small>{'wakeLock' in navigator ? '前台显示时生效' : '需要 HTTPS 与支持的浏览器'}</small></span><Toggle label="保持屏幕常亮" checked={wake} disabled={!('wakeLock' in navigator)} onChange={setWake} /></div><VoiceSettings voice={voice} />
       <details className="rules"><summary>使用说明</summary><p>一人创建牌桌，其他人扫码或输入房间码加入。满员后由房主开始对局。</p><p>点击对手的点数卡片发起支付；自摸、立直和流局使用下方按钮，按页面提示确认。</p><p>记错可用撤销、重做；房主也可在牌桌设置中修改当前场况。每笔操作可在对战记录中查看。</p><p>打完后由房主结束对战、确认结算。返回大厅可继续下一场；首页“我的对局”可查看个人战绩。</p><p>换设备时登录原账号即可回座。对局中禁止修改密码，结束并确认结算后可修改。</p></details>
     </Sheet>}</AnimatePresence>

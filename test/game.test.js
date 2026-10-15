@@ -74,16 +74,16 @@ test('骰子默认关闭，开启后开局、和牌和流局自动投掷，其�
   for (const invalid of [{ autoDice: 'true' }, { tsumoConfirm: 1 }]) assert.throws(() => room(4, invalid), /布尔/);
 });
 
-for (const count of [3, 4]) test(`${count} 人牌桌开关仅房主可改，不改变局况，确认流程即时生效，骰子从下一局生效`, () => {
+for (const count of [3, 4]) test(`${count} 人牌桌开关全员可改，不改变局况，确认流程即时生效，骰子从下一局生效`, () => {
   const r = room(count), before = structuredClone(r.history);
   const settings = { type: 'table-settings', tsumoConfirm: true, autoDice: true, requestId: 'table-settings-once' };
-  assert.throws(() => act(r, 1, settings), /房主/);
+  assert.throws(() => act(r, count, settings), /不在/);
   for (const invalid of [{ tsumoConfirm: 1 }, { autoDice: 'false' }, { autoDice: undefined }]) {
     assert.throws(() => act(r, 0, { ...settings, ...invalid }), /布尔/);
   }
   const revision = r.revision;
-  act(r, 0, settings);
-  assert.equal(act(r, 0, settings), false);
+  act(r, 1, settings);
+  assert.equal(act(r, 1, settings), false);
   assert.equal(r.revision, revision + 1);
   assert.deepEqual(r.history, before);
   assert.equal(stateOf(r).dice, undefined);
@@ -96,7 +96,7 @@ for (const count of [3, 4]) test(`${count} 人牌桌开关仅房主可改，不�
   receive(r, 1);
   const rolled = structuredClone(stateOf(r).dice);
   assert.ok(rolled.values.every((n) => Number.isInteger(n) && n >= 1 && n <= 6));
-  act(r, 0, { type: 'table-settings', tsumoConfirm: false, autoDice: false });
+  act(r, count - 1, { type: 'table-settings', tsumoConfirm: false, autoDice: false });
   assert.deepEqual(stateOf(r).dice, rolled);
   act(r, 1, { type: 'propose', mode: 'tsumo', transfers }); receive(r, 1);
   assert.equal(stateOf(r).dice, undefined);
@@ -104,9 +104,41 @@ for (const count of [3, 4]) test(`${count} 人牌桌开关仅房主可改，不�
   assert.throws(() => act(r, 0, { ...settings, requestId: 'draw-settings' }), /结算/);
   for (let i = 1; i < count; i++) act(r, i, { type: 'draw', tenpai: false });
   act(r, 0, { type: 'end' });
-  assert.throws(() => act(r, 0, { ...settings, requestId: 'settling-settings' }), /对局中/);
+  assert.throws(() => act(r, 1, { ...settings, requestId: 'settling-settings' }), /确认对战结算/);
   act(r, 0, { type: 'confirm-end' });
-  assert.throws(() => act(r, 0, { ...settings, requestId: 'ended-settings' }), /对局中/);
+  const finished = structuredClone(publicRoom(r));
+  act(r, 1, { ...settings, requestId: 'ended-settings' });
+  assert.deepEqual(r.matches[0].config, finished.config);
+  assert.deepEqual(r.matches[0].state, finished.state);
+  assert.equal(stateOf(r).status, 'waiting');
+  act(r, count - 1, { type: 'table-settings', tsumoConfirm: false, autoDice: false });
+  assert.equal(r.config.autoDice, false); assert.equal(r.config.tsumoConfirm, false);
+  assert.throws(() => act(r, 1, { type: 'configure', startPoints: 35000, length: 'east', playerCount: count }), /房主/);
+});
+
+for (const count of [3, 4]) test(`${count} 人对方支付：收款方可发起，付款人先确认，拒绝、幂等和撤销保留正确分数`, () => {
+  const r = room(count);
+  const transfers = [{ from: 2, to: 1, amount: 3900 }];
+  assert.throws(() => act(r, 0, { type: 'propose', mode: 'ron', transfers }), /放铳者/);
+  assert.throws(() => act(r, 1, { type: 'propose', mode: 'ron', transfers: [...transfers, { from: 2, to: 0, amount: 1000 }] }), /单一/);
+  act(r, 1, { type: 'propose', mode: 'ron', transfers });
+  assert.deepEqual(r.pending.approved, []);
+  assert.throws(() => receive(r, 1), /付款/);
+  assert.throws(() => act(r, 1, { type: 'approve', pendingId: r.pending.id }), /付款方/);
+  act(r, 2, { type: 'cancel', pendingId: r.pending.id });
+  assert.equal(r.pending, null); assert.deepEqual(stateOf(r).scores, Array(count).fill(25000));
+  const proposal = { type: 'propose', mode: 'ron', transfers, requestId: 'receive-request-once' };
+  act(r, 1, proposal); assert.equal(act(r, 1, proposal), false);
+  const pendingId = r.pending.id;
+  act(r, 2, { type: 'approve', pendingId });
+  assert.deepEqual(stateOf(r).scores, Array(count).fill(25000));
+  assert.throws(() => receive(r, 2), /收款方/);
+  const confirmation = { type: 'receive', pendingId, requestId: 'receive-confirm-once' };
+  act(r, 1, confirmation); assert.equal(act(r, 1, confirmation), false);
+  assert.equal(stateOf(r).scores[1], 28900); assert.equal(stateOf(r).scores[2], 21100);
+  assert.equal(stateOf(r).hand, 1);
+  act(r, 0, { type: 'undo' }); assert.deepEqual(stateOf(r).scores, Array(count).fill(25000));
+  act(r, 0, { type: 'redo' }); assert.equal(stateOf(r).scores[1], 28900);
 });
 
 for (const count of [3, 4]) test(`${count} 人结算先预览供托，房主确认后给第一名且不可撤销`, () => {
