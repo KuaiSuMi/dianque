@@ -18,7 +18,7 @@ function runtime(path) {
   } }] });
 }
 async function request(mf, path, { cookie, body, method = body ? 'POST' : 'GET', headers = {} } = {}) {
-  const response = await mf.dispatchFetch(origin + '/api' + path, { method, headers: { Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined }).catch((error) => { console.error(path, error.cause); throw error; });
+  const response = await mf.dispatchFetch(origin + '/api' + path, { method, headers: { Origin: origin, 'CF-Connecting-IP': '192.0.2.1', ...(cookie ? { Cookie: cookie } : {}), ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined }).catch((error) => { console.error(path, error.cause); throw error; });
   return { status: response.status, body: await response.json(), cookie: response.headers.get('Set-Cookie')?.split(';')[0], headers: response.headers };
 }
 async function register(mf, nickname) {
@@ -74,6 +74,86 @@ test('Workers 账号：密码校验、唯一昵称、Cookie、跨站拒绝、记
     assert.equal((await request(mf, '/session', { cookie: user.cookie })).body.user, null);
     assert.equal((await request(mf, '/rooms', { cookie: user.cookie, body: {} })).status, 401);
     assert.equal((await request(mf, '/session', { cookie: login.cookie })).body.user.id, user.body.user.id);
+  } finally { await mf.dispose(); }
+});
+
+test('注册限流：旧失败计数不阻塞注册，服务端故障回滚，冲突不占额度，成功注册仍限额', async () => {
+  const mf = runtime();
+  try {
+    const db = (await mf.getDurableObjectNamespace('APP')).getByName('main');
+    await db.one('INSERT INTO limits VALUES (?,?,?)', 'register:192.0.2.1', 8, Date.now() + 3600000);
+    await db.one('INSERT INTO limits VALUES (?,?,?)', 'login:注册测试', 10, Date.now() + 900000);
+    await db.one("CREATE TRIGGER fail_session BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'test session failure'); END");
+    const failed = await request(mf, '/register', { body: { nickname: '注册测试', password } });
+    assert.equal(failed.status, 500); assert.equal(failed.cookie, undefined);
+    assert.equal((await db.one('SELECT COUNT(*) AS n FROM users')).n, 0);
+    assert.equal(await db.one('SELECT * FROM limits WHERE key=?', 'registered:192.0.2.1'), undefined);
+    assert.equal((await db.one('SELECT count FROM limits WHERE key=?', 'auth:192.0.2.1')).count, 1);
+    await db.one('DROP TRIGGER fail_session');
+    await register(mf, '注册测试');
+    for (let i = 0; i < 10; i++) {
+      assert.equal((await request(mf, '/register', { body: { nickname: '注册测试', password } })).status, 409);
+    }
+    assert.equal(await db.one('SELECT * FROM limits WHERE key=?', 'login:注册测试'), undefined);
+    for (let i = 0; i < 7; i++) await register(mf, `额度测试${i}`);
+    const quota = await db.one('SELECT * FROM limits WHERE key=?', 'registered:192.0.2.1');
+    assert.equal(quota.count, 8);
+    const blocked = await request(mf, '/register', { body: { nickname: '第九个账号', password } });
+    assert.equal(blocked.status, 429); assert.equal(blocked.cookie, undefined);
+    assert.match(blocked.body.error, /^注册账号过多，请在 \d+ 分钟后重试$/);
+    assert.ok(Number(blocked.headers.get('Retry-After')) > 0 && Number(blocked.headers.get('Retry-After')) <= 3600);
+    const after = await db.one('SELECT * FROM limits WHERE key=?', 'registered:192.0.2.1');
+    assert.equal(after.count, quota.count); assert.equal(after.until, quota.until);
+    assert.equal((await db.one('SELECT COUNT(*) AS n FROM users')).n, 8);
+    await db.one('UPDATE limits SET until=? WHERE key=?', Date.now() - 1, 'registered:192.0.2.1');
+    await register(mf, '第九个账号');
+    assert.equal((await db.one('SELECT count FROM limits WHERE key=?', 'registered:192.0.2.1')).count, 1);
+  } finally { await mf.dispose(); }
+});
+
+test('登录限流：服务端故障不扣昵称额度，错误密码仍计数，限流不延长等待，到期恢复', async () => {
+  const mf = runtime();
+  try {
+    await register(mf, '登录测试');
+    const db = (await mf.getDurableObjectNamespace('APP')).getByName('main');
+    await db.one("CREATE TRIGGER fail_session BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'test session failure'); END");
+    assert.equal((await request(mf, '/login', { body: { nickname: '登录测试', password } })).status, 500);
+    assert.equal(await db.one('SELECT * FROM limits WHERE key=?', 'login:登录测试'), undefined);
+    assert.equal((await db.one('SELECT COUNT(*) AS n FROM sessions')).n, 1);
+    await db.one('DROP TRIGGER fail_session');
+    for (let i = 0; i < 10; i++) {
+      assert.equal((await request(mf, '/login', { body: { nickname: '登录测试', password: 'wrong-password' } })).status, 401);
+    }
+    const quota = await db.one('SELECT * FROM limits WHERE key=?', 'login:登录测试');
+    assert.equal(quota.count, 10);
+    const blocked = await request(mf, '/login', { body: { nickname: '登录测试', password } });
+    assert.equal(blocked.status, 429); assert.equal(blocked.cookie, undefined);
+    assert.match(blocked.body.error, /^登录尝试过多，请在 \d+ 分钟后重试$/);
+    assert.ok(Number(blocked.headers.get('Retry-After')) > 0 && Number(blocked.headers.get('Retry-After')) <= 900);
+    const after = await db.one('SELECT * FROM limits WHERE key=?', 'login:登录测试');
+    assert.equal(after.count, quota.count); assert.equal(after.until, quota.until);
+    await db.one('UPDATE limits SET until=? WHERE key=?', Date.now() + 30000, 'login:登录测试');
+    assert.match((await request(mf, '/login', { body: { nickname: '登录测试', password } })).body.error, /\d+ 秒后重试$/);
+    await db.one('UPDATE limits SET until=? WHERE key=?', Date.now() - 1, 'login:登录测试');
+    assert.equal((await request(mf, '/login', { body: { nickname: '登录测试', password } })).status, 200);
+    assert.equal(await db.one('SELECT * FROM limits WHERE key=?', 'login:登录测试'), undefined);
+  } finally { await mf.dispose(); }
+});
+
+test('认证请求仍按 IP 限流，注册和登录共享额度，到期后恢复', async () => {
+  const mf = runtime();
+  try {
+    for (let i = 0; i < 30; i++) {
+      assert.equal((await request(mf, i % 2 ? '/login' : '/register', { body: { nickname: '请求测试', password: 'short' } })).status, 400);
+    }
+    const blocked = await request(mf, '/register', { body: { nickname: '请求测试', password } });
+    assert.equal(blocked.status, 429);
+    assert.match(blocked.body.error, /^登录或注册请求过多，请在 \d+ 分钟后重试$/);
+    assert.ok(Number(blocked.headers.get('Retry-After')) > 0 && Number(blocked.headers.get('Retry-After')) <= 900);
+    const db = (await mf.getDurableObjectNamespace('APP')).getByName('main');
+    assert.equal((await db.one('SELECT COUNT(*) AS n FROM users')).n, 0);
+    await db.one('UPDATE limits SET until=? WHERE key=?', Date.now() - 1, 'auth:192.0.2.1');
+    await register(mf, '请求测试');
   } finally { await mf.dispose(); }
 });
 

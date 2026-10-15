@@ -101,6 +101,7 @@ npm run deploy
 ## 数据与运行
 
 - 密码使用随机盐与原生 scrypt（N=32768、r=8、p=3，约 32 MiB 内存）；计算在 Durable Object 内完成。参数采用 [OWASP 推荐档位](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#scrypt)，符合 Cloudflare 原生 KDF 限制；不保存明文。登录失败和注册均有限流。
+- 同一 IP 每 15 分钟最多提交 30 次认证请求、每小时最多成功注册 8 个账号；同一昵称每 15 分钟最多尝试登录 10 次，成功登录后清零。注册不占用昵称登录次数，昵称冲突及服务端故障不消耗成功注册额度；服务端故障会回滚昵称登录计数，但仍计入 IP 请求次数。限流提示剩余等待时间，并返回 `Retry-After`。
 - Cookie 为 HttpOnly、SameSite=Lax，线上启用 Secure，30 天过期；退出立即撤销该会话并断开其同步连接。
 - API 与 WebSocket 同源校验。服务端验证成员、房主权限、金额、版本和幂等编号。历史明细只允许当场参赛账号读取。
 - 操作通过 HTTP 提交，持久化后再广播。断网时暂停操作，不做离线合并；重连获取最新状态。

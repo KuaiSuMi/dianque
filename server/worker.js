@@ -49,10 +49,14 @@ export class Dianque extends DurableObject {
   }
 
   one(query, ...args) { return this.sql.exec(query, ...args).toArray()[0]; }
-  limit(key, max, duration = 60000) {
+  limit(key, max, duration = 60000, message = '操作太频繁') {
     const now = Date.now();
     const row = this.one('SELECT count,until FROM limits WHERE key=?', key);
-    if (row && row.until > now && row.count >= max) fail(429, '操作太频繁，请稍后再试');
+    if (row && row.until > now && row.count >= max) {
+      const retryAfter = Math.ceil((row.until - now) / 1000);
+      const wait = retryAfter >= 60 ? `${Math.ceil(retryAfter / 60)} 分钟` : `${retryAfter} 秒`;
+      throw Object.assign(new Error(`${message}，请在 ${wait}后重试`), { status: 429, retryAfter });
+    }
     this.sql.exec('INSERT INTO limits VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET count=excluded.count,until=excluded.until', key, row && row.until > now ? row.count + 1 : 1, row && row.until > now ? row.until : now + duration);
   }
   user(request) {
@@ -119,22 +123,28 @@ export class Dianque extends DurableObject {
       const body = method === 'POST' && request.body ? await bodyOf(request) : {};
       if (method === 'POST' && ['/api/register', '/api/login'].includes(path)) {
         const ip = request.headers.get('CF-Connecting-IP') || 'local';
-        this.limit(`auth:${ip}`, 30, 15 * 60000);
+        this.limit(`auth:${ip}`, 30, 15 * 60000, '登录或注册请求过多');
         const { nickname, key, password } = credentials(body);
-        this.limit(`login:${key}`, 10, 15 * 60000);
-        let user = this.one('SELECT * FROM users WHERE nickname_key=?', key);
-        if (path === '/api/register') {
-          this.limit(`register:${ip}`, 8, 3600000);
-          if (user) fail(409, '昵称已被使用');
-          const { salt, hash } = passwordHash(password);
-          this.sql.exec('INSERT INTO users(id,nickname_key,nickname,salt,password_hash,created_at) VALUES (?,?,?,?,?,?)', randomUUID(), key, nickname, salt, hash, new Date().toISOString());
-          user = this.one('SELECT * FROM users WHERE nickname_key=?', key);
-        } else if (!verifyPassword(password, user)) fail(401, '昵称或密码不正确');
-        this.sql.exec('DELETE FROM limits WHERE key=? OR until<?', `login:${key}`, Date.now());
-        this.sql.exec('DELETE FROM sessions WHERE expires_at<?', Date.now());
-        const token = newToken();
-        this.sql.exec('INSERT INTO sessions VALUES (?,?,?)', digest(token), user.id, Date.now() + SESSION_SECONDS * 1000);
-        return json(this.session(user), path === '/api/register' ? 201 : 200, { 'Set-Cookie': cookie(token, request) });
+        // 账号、会话和配额一起提交，服务端故障不消耗注册或昵称登录额度。
+        return this.ctx.storage.transactionSync(() => {
+          let user = this.one('SELECT * FROM users WHERE nickname_key=?', key);
+          if (path === '/api/register') {
+            if (user) fail(409, '昵称已被使用');
+            this.limit(`registered:${ip}`, 8, 3600000, '注册账号过多');
+            const { salt, hash } = passwordHash(password);
+            this.sql.exec('INSERT INTO users(id,nickname_key,nickname,salt,password_hash,created_at) VALUES (?,?,?,?,?,?)', randomUUID(), key, nickname, salt, hash, new Date().toISOString());
+            user = this.one('SELECT * FROM users WHERE nickname_key=?', key);
+          } else {
+            this.limit(`login:${key}`, 10, 15 * 60000, '登录尝试过多');
+            // 密码错误仍须提交失败计数，不能抛出异常触发回滚。
+            if (!verifyPassword(password, user)) return json({ error: '昵称或密码不正确' }, 401);
+          }
+          this.sql.exec('DELETE FROM limits WHERE key=? OR until<?', `login:${key}`, Date.now());
+          this.sql.exec('DELETE FROM sessions WHERE expires_at<?', Date.now());
+          const token = newToken();
+          this.sql.exec('INSERT INTO sessions VALUES (?,?,?)', digest(token), user.id, Date.now() + SESSION_SECONDS * 1000);
+          return json(this.session(user), path === '/api/register' ? 201 : 200, { 'Set-Cookie': cookie(token, request) });
+        });
       }
       const user = this.user(request);
       if (path === '/api/session' && method === 'GET') return json(user ? this.session(user) : { user: null });
@@ -226,7 +236,7 @@ export class Dianque extends DurableObject {
     } catch (error) {
       const status = error instanceof GameError ? 400 : error.status || 500;
       if (status === 500) console.error(error);
-      return json({ error: status === 500 ? '服务暂时不可用，请重试' : error.message }, status);
+      return json({ error: status === 500 ? '服务暂时不可用，请重试' : error.message }, status, error.retryAfter ? { 'Retry-After': String(error.retryAfter) } : {});
     }
   }
   webSocketMessage(ws) { ws.close(1008, '请通过页面提交操作'); }
