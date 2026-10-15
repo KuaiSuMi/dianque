@@ -34,7 +34,7 @@ function DigitDisplay({ value, compact = false }) {
   </span>;
 }
 
-function Logo() { return <span className="logo">点雀</span>; }
+function Logo({ subtitle = false }) { return <span className={`logo${subtitle ? ' logo-with-subtitle' : ''}`}>点雀{subtitle && <span className="logo-subtitle">日麻线下计分助手</span>}</span>; }
 function Button({ children, icon: Icon, className = '', loading, ...props }) { return <button className={`button ${className}`} {...props}>{loading ? <LoaderCircle size={18} className="spin" /> : Icon ? <Icon size={18} /> : null}{children}</button>; }
 function Avatar({ player, large = false }) { return <span className={`avatar seat-${player?.seat ?? 0} ${large ? 'avatar-large' : ''}`}>{player?.name?.slice(0, 1) || '待'}</span>; }
 function RiichiStick({ small = false }) { return <span className={`riichi-stick ${small ? 'stick-small' : ''}`} aria-hidden="true"><i /></span>; }
@@ -97,7 +97,7 @@ function Lobby({ user, onEnter, notify, openAccount, openAdmin }) {
     } catch (error) { notify(error.message); } finally { setBusy(false); }
   }
   return <main className="lobby page">
-    <header className="app-header"><Logo /><button className="text-button" onClick={openAccount}><History size={17} />{user.nickname} · 我的对局</button></header>
+    <header className="app-header"><Logo subtitle /><button className="text-button" onClick={openAccount}><History size={17} />{user.nickname} · 我的对局</button></header>
     <AdminEntry open={openAdmin} />
     <div className="lobby-layout">
       <section className="entry-panel"><Segmented className="entry-tabs" label="进入牌桌方式" value={tab} onChange={setTab} options={[['create', '创建牌桌'], ['join', '加入牌桌']]} />
@@ -447,7 +447,7 @@ function App() {
   }
   if (!ready) return <main className="connecting"><Logo /><LoaderCircle className="spin" size={28} /><p>{connectionError || '正在连接…'}</p>{connectionError && <Button onClick={() => location.reload()}>重试</Button>}</main>;
   return <NoticeContext.Provider value={message}><AnimatePresence mode="wait" initial={false}><PageTransition key={!user ? 'auth' : !room ? 'lobby' : `room-${room.code}-${room.state.status === 'ended' ? 'waiting' : room.state.status}`}>
-    {!user ? <main className="lobby page"><header className="app-header"><Logo /></header><div className="lobby-layout"><AuthForm onAuth={restore} /></div></main> : room && me ? <Table room={room} me={me} act={act} busy={busy} connected={connected} notify={notify} home={home} openAdmin={openAdmin} changePassword={() => setPasswordOpen(true)} /> : <Lobby user={user} onEnter={enter} notify={notify} openAccount={() => setAccountOpen(true)} openAdmin={openAdmin} />}
+    {!user ? <main className="lobby page"><header className="app-header"><Logo subtitle /></header><div className="lobby-layout"><AuthForm onAuth={restore} /></div></main> : room && me ? <Table room={room} me={me} act={act} busy={busy} connected={connected} notify={notify} home={home} openAdmin={openAdmin} changePassword={() => setPasswordOpen(true)} /> : <Lobby user={user} onEnter={enter} notify={notify} openAccount={() => setAccountOpen(true)} openAdmin={openAdmin} />}
     </PageTransition></AnimatePresence>
     <AnimatePresence>{accountOpen && user && <Sheet key="account" title="我的对局" close={() => setAccountOpen(false)} wide><AccountHistory user={user} openRecord={setAccountRecord} logout={logout} changePassword={() => setPasswordOpen(true)} /></Sheet>}{accountRecord && <Records key="account-record" record={accountRecord} close={() => setAccountRecord(null)} />}</AnimatePresence>
     <AnimatePresence>{adminOpen && user?.isAdmin && <Sheet key="admin" title="账号管理" close={() => setAdminOpen(false)}><AdminUsers user={user} onSaved={accountSaved} /></Sheet>}</AnimatePresence>
