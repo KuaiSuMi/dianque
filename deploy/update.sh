@@ -41,7 +41,8 @@ test "$(git rev-parse HEAD)" = "$revision"
 npm ci --include=dev --no-fund --no-audit
 npm test
 npm run build
-npm prune --omit=dev --no-fund --no-audit
+npm ci --omit=dev --no-fund --no-audit
+test -z "$(git status --porcelain)" || { echo '测试或构建修改了仓库文件，停止部署。' >&2; exit 1; }
 runuser -u dianque -- node --input-type=module <<'JS'
 import assert from 'node:assert/strict';
 import { createApp } from './server/index.js';
