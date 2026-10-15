@@ -1,0 +1,10 @@
+node_modules/
+dist/
+data/
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+.wrangler/
+*.log
+.impeccable/

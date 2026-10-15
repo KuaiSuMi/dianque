@@ -1,0 +1,747 @@
+/* ==========================================================================
+   Apple-Style — web implementation of Apple's design system (HIG + Liquid Glass)
+   Prefix: as-   |  Source of truth: Apple HIG (Materials, Color, Typography,
+   Layout, Buttons, Toolbars, Tab bars, Sidebars, Sheets, Menus), WWDC25 219/356.
+   Load once. Pair with liquid-glass.js for lensing, adaptivity, morphing.
+   ========================================================================== */
+
+/* --------------------------------------------------------------------------
+   0. Root tokens
+   -------------------------------------------------------------------------- */
+:root {
+  color-scheme: light dark;
+
+  /* Fonts: SF Pro renders natively on Apple devices via -apple-system. Text vs
+     Display optical sizes are chosen automatically by the system font (~20pt). */
+  --as-font-text: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", system-ui, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --as-font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro", system-ui, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --as-font-rounded: ui-rounded, "SF Pro Rounded", var(--as-font-text);
+  --as-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Spacing (4pt grid) + layout metrics from HIG Layout/Buttons */
+  --as-space-1: 4px;  --as-space-2: 8px;  --as-space-3: 12px; --as-space-4: 16px;
+  --as-space-5: 20px; --as-space-6: 24px; --as-space-8: 32px; --as-space-10: 40px;
+  --as-margin: 16px;              /* compact width layout margin */
+  --as-margin-regular: 20px;      /* regular width layout margin */
+  --as-hit-min: 44px;             /* minimum hit region 44x44pt (visionOS: 60) */
+  --as-readable-width: 672px;     /* readable content guide */
+  --as-tabsidebar-width: 216px;   /* tab bar adapted into a sidebar at regular width */
+
+  /* Shapes. Three types (WWDC25/356): fixed, capsule (radius = height/2),
+     concentric (parent radius − inset). */
+  --as-radius-xs: 6px;  --as-radius-s: 10px; --as-radius-m: 14px; --as-radius-l: 20px;
+  --as-radius-xl: 26px; --as-radius-xxl: 34px; --as-radius-capsule: 9999px;
+  --as-radius-sheet: 38px;        /* iOS 26 sheet corners nest into display corners */
+  --as-radius-window: 24px;       /* macOS 26 window corner */
+
+  /* Motion: spring-ish curves. Liquid Glass is gel-like; use springs, not ease-in-out. */
+  --as-ease-spring: linear(0, 0.009 1.1%, 0.036 2.3%, 0.145 4.9%, 0.318 7.9%, 0.554 11.6%, 0.8 15.9%, 1.006 20.4%, 1.07 22.9%, 1.11 25.5%, 1.128 28.3%, 1.121 31.7%, 1.031 43.7%, 0.996 51.6%, 0.989 60.3%, 0.998 74.8%, 1);
+  --as-ease-soft: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --as-dur-fast: 160ms; --as-dur-base: 320ms; --as-dur-slow: 560ms;
+
+  /* ---------------- System colors (HIG Color → Specifications) ------------ */
+  --as-red:    light-dark(rgb(255 56 60),   rgb(255 66 69));
+  --as-orange: light-dark(rgb(255 141 40),  rgb(255 146 48));
+  --as-yellow: light-dark(rgb(255 204 0),   rgb(255 214 0));
+  --as-green:  light-dark(rgb(52 199 89),   rgb(48 209 88));
+  --as-mint:   light-dark(rgb(0 200 179),   rgb(0 218 195));
+  --as-teal:   light-dark(rgb(0 195 208),   rgb(0 210 224));
+  --as-cyan:   light-dark(rgb(0 192 232),   rgb(60 211 254));
+  --as-blue:   light-dark(rgb(0 136 255),   rgb(0 145 255));
+  --as-indigo: light-dark(rgb(97 85 245),   rgb(109 124 255));
+  --as-purple: light-dark(rgb(203 48 224),  rgb(219 52 242));
+  --as-pink:   light-dark(rgb(255 45 85),   rgb(255 55 95));
+  --as-brown:  light-dark(rgb(172 127 94),  rgb(183 138 102));
+  --as-gray:   light-dark(rgb(142 142 147), rgb(142 142 147));
+  --as-gray2:  light-dark(rgb(174 174 178), rgb(99 99 102));
+  --as-gray3:  light-dark(rgb(199 199 204), rgb(72 72 74));
+  --as-gray4:  light-dark(rgb(209 209 214), rgb(58 58 60));
+  --as-gray5:  light-dark(rgb(229 229 234), rgb(44 44 46));
+  --as-gray6:  light-dark(rgb(242 242 247), rgb(28 28 30));
+  --as-accent: var(--as-blue);   /* app accent color; override per brand */
+
+  /* Semantic (dynamic) colors — UIKit semantic values, adapt light/dark */
+  --as-label:            light-dark(rgb(0 0 0),              rgb(255 255 255));
+  --as-label-secondary:  light-dark(rgb(60 60 67 / .60),     rgb(235 235 245 / .60));
+  --as-label-tertiary:   light-dark(rgb(60 60 67 / .30),     rgb(235 235 245 / .30));
+  --as-label-quaternary: light-dark(rgb(60 60 67 / .18),     rgb(235 235 245 / .16));
+  --as-placeholder:      var(--as-label-tertiary);
+  --as-separator:        light-dark(rgb(60 60 67 / .29),     rgb(84 84 88 / .60));
+  --as-separator-opaque: light-dark(rgb(198 198 200),        rgb(56 56 58));
+  --as-link:             var(--as-blue);
+  --as-bg:               light-dark(rgb(255 255 255),        rgb(0 0 0));
+  --as-bg-secondary:     light-dark(rgb(242 242 247),        rgb(28 28 30));
+  --as-bg-tertiary:      light-dark(rgb(255 255 255),        rgb(44 44 46));
+  --as-bg-grouped:       light-dark(rgb(242 242 247),        rgb(0 0 0));
+  --as-bg-grouped-2:     light-dark(rgb(255 255 255),        rgb(28 28 30));
+  --as-bg-grouped-3:     light-dark(rgb(242 242 247),        rgb(44 44 46));
+  --as-fill:             light-dark(rgb(120 120 128 / .20),  rgb(120 120 128 / .36));
+  --as-fill-secondary:   light-dark(rgb(120 120 128 / .16),  rgb(120 120 128 / .32));
+  --as-fill-tertiary:    light-dark(rgb(118 118 128 / .12),  rgb(118 118 128 / .24));
+  --as-fill-quaternary:  light-dark(rgb(116 116 128 / .08),  rgb(118 118 128 / .18));
+
+  /* Standard materials (content layer). Thickness = opacity of fill. */
+  --as-material-ultrathin: light-dark(rgb(255 255 255 / .55), rgb(30 30 30 / .55));
+  --as-material-thin:      light-dark(rgb(255 255 255 / .70), rgb(30 30 30 / .70));
+  --as-material-regular:   light-dark(rgb(255 255 255 / .82), rgb(30 30 30 / .82));
+  --as-material-thick:     light-dark(rgb(255 255 255 / .93), rgb(30 30 30 / .93));
+  --as-material-blur: 30px;
+
+  /* ---------------- Liquid Glass material tokens --------------------------
+     Layers (WWDC25/219): lensing → blur/luminosity → tint → highlights → shadow
+     → interactive glow. Glass has NO inherent color; it takes color from behind. */
+  --as-glass-blur: 14px;                 /* regular, small elements */
+  --as-glass-blur-large: 40px;           /* regular, large surfaces (sidebar/menu/sheet) */
+  --as-glass-saturate: 1.6;
+  --as-glass-fill: light-dark(rgb(255 255 255 / .42), rgb(40 40 44 / .42));      /* luminosity adaptation */
+  --as-glass-fill-large: light-dark(rgb(255 255 255 / .70), rgb(36 36 40 / .72)); /* more opaque when large */
+  --as-glass-fg: light-dark(rgb(0 0 0 / .88), rgb(255 255 255 / .94));
+  --as-glass-fg-secondary: light-dark(rgb(0 0 0 / .55), rgb(255 255 255 / .62));
+  --as-glass-rim-hi: light-dark(rgb(255 255 255 / .58), rgb(255 255 255 / .26));  /* specular rim, lit side */
+  --as-glass-rim-lo: light-dark(rgb(255 255 255 / .14), rgb(255 255 255 / .05));  /* shadow side */
+  --as-glass-rim-width: 1px;             /* hairline. Thicker reads as an outlined pill, not glass */
+  --as-glass-edge:   light-dark(rgb(0 0 0 / .06), rgb(255 255 255 / .06));         /* hairline edge for definition */
+  --as-glass-shadow: 0 8px 24px -6px rgb(0 0 0 / .22), 0 2px 6px -2px rgb(0 0 0 / .14);
+  --as-glass-shadow-large: 0 24px 60px -12px rgb(0 0 0 / .32), 0 6px 16px -6px rgb(0 0 0 / .16);
+  --as-glass-light-angle: 145deg;        /* virtual light source direction (top-left) */
+  --as-glass-lens: 0;                    /* set to 1 by liquid-glass.js when displacement filter is active */
+  --as-glass-tint: transparent;          /* stained-glass tint; use only for primary actions */
+
+  /* Clarity comes from what the material does to the light behind it —
+     refraction, a re-levelled backdrop and one precise edge. It does NOT come
+     from highlights painted onto the surface: a body-wide white gradient or a
+     double bevel is the 2008 glossy-button look, and it reads as cheap plastic
+     the moment there is nothing interesting behind the glass. Interior stays
+     clean; contrast (not brightness) keeps refracted content from going milky. */
+  --as-glass-brightness: 1;              /* brightening washes the material out */
+  --as-glass-contrast: 1.05;             /* re-level so the backdrop keeps its punch */
+  --as-glass-bevel:                      /* light entering the top edge + a faint inner refraction ring */
+    inset 0 0.5px 0 0 rgb(255 255 255 / .20),
+    inset 0 0 12px -10px rgb(0 0 0 / .26);
+  --as-glass-sheen: transparent;         /* opt-in only; see the note above before raising it */
+
+  /* Gel flex. Liquid Glass "instantly flexes" on touch and "moves in tandem
+     with your interaction" (WWDC25/219). liquid-glass.js drives these from the
+     pointer; CSS :active is the no-JS fallback. */
+  --as-flex-x: 1; --as-flex-y: 1;
+  --as-flex-press-x: 1.06; --as-flex-press-y: 1.03;
+}
+
+/* Registered so the light source can glide back to rest instead of snapping
+   when the pointer leaves. Unsupported browsers just skip the transition. */
+@property --as-glass-light-angle { syntax: "<angle>"; inherits: true; initial-value: 145deg; }
+
+/* Explicit theme override (data-theme="light|dark" on <html>) */
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"]  { color-scheme: dark; }
+
+/* Increased contrast variants of system colors (HIG Color spec) */
+@media (prefers-contrast: more) {
+  :root {
+    --as-red:    light-dark(rgb(233 21 45),   rgb(255 97 101));
+    --as-orange: light-dark(rgb(197 83 0),    rgb(255 160 86));
+    --as-yellow: light-dark(rgb(161 106 0),   rgb(254 223 67));
+    --as-green:  light-dark(rgb(0 137 50),    rgb(74 217 104));
+    --as-mint:   light-dark(rgb(0 133 117),   rgb(84 223 203));
+    --as-teal:   light-dark(rgb(0 129 152),   rgb(59 221 236));
+    --as-cyan:   light-dark(rgb(0 126 174),   rgb(109 217 255));
+    --as-blue:   light-dark(rgb(30 110 244),  rgb(92 184 255));
+    --as-indigo: light-dark(rgb(86 74 222),   rgb(167 170 255));
+    --as-purple: light-dark(rgb(176 47 194),  rgb(234 141 255));
+    --as-pink:   light-dark(rgb(231 18 77),   rgb(255 138 196));
+    --as-brown:  light-dark(rgb(149 109 81),  rgb(219 166 121));
+    --as-gray:   light-dark(rgb(108 108 112), rgb(174 174 178));
+    --as-gray2:  light-dark(rgb(142 142 147), rgb(124 124 128));
+    --as-gray3:  light-dark(rgb(174 174 178), rgb(84 84 86));
+    --as-gray4:  light-dark(rgb(188 188 192), rgb(68 68 70));
+    --as-gray5:  light-dark(rgb(216 216 220), rgb(54 54 56));
+    --as-gray6:  light-dark(rgb(235 235 240), rgb(36 36 38));
+  }
+}
+
+/* --------------------------------------------------------------------------
+   1. Base + typography (iOS Large default Dynamic Type; macOS via data-platform)
+   -------------------------------------------------------------------------- */
+.as-root, .as-body {
+  font-family: var(--as-font-text);
+  font-size: 17px; line-height: 22px;
+  color: var(--as-label);
+  background: var(--as-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "kern";
+}
+.as-text-largetitle { font: 400 34px/41px var(--as-font-display); letter-spacing: .4px; }
+.as-text-title1     { font: 400 28px/34px var(--as-font-display); letter-spacing: .36px; }
+.as-text-title2     { font: 400 22px/28px var(--as-font-display); letter-spacing: .35px; }
+.as-text-title3     { font: 400 20px/25px var(--as-font-display); letter-spacing: .38px; }
+.as-text-headline   { font: 600 17px/22px var(--as-font-text); letter-spacing: -.43px; }
+.as-text-body       { font: 400 17px/22px var(--as-font-text); letter-spacing: -.43px; }
+.as-text-callout    { font: 400 16px/21px var(--as-font-text); letter-spacing: -.32px; }
+.as-text-subhead    { font: 400 15px/20px var(--as-font-text); letter-spacing: -.24px; }
+.as-text-footnote   { font: 400 13px/18px var(--as-font-text); letter-spacing: -.08px; }
+.as-text-caption1   { font: 400 12px/16px var(--as-font-text); letter-spacing: 0; }
+.as-text-caption2   { font: 400 11px/13px var(--as-font-text); letter-spacing: .07px; }
+/* Emphasized weights per HIG table */
+.as-text-largetitle.as-em, .as-text-title1.as-em, .as-text-title2.as-em { font-weight: 700; }
+.as-text-title3.as-em, .as-text-body.as-em, .as-text-callout.as-em, .as-text-subhead.as-em,
+.as-text-footnote.as-em, .as-text-caption1.as-em, .as-text-caption2.as-em { font-weight: 600; }
+/* macOS built-in text styles */
+[data-platform="macos"] .as-root, [data-platform="macos"] .as-body { font-size: 13px; line-height: 16px; }
+[data-platform="macos"] .as-text-largetitle { font: 400 26px/32px var(--as-font-display); }
+[data-platform="macos"] .as-text-title1     { font: 400 22px/26px var(--as-font-display); }
+[data-platform="macos"] .as-text-title2     { font: 400 17px/22px var(--as-font-text); }
+[data-platform="macos"] .as-text-title3     { font: 400 15px/20px var(--as-font-text); }
+[data-platform="macos"] .as-text-headline   { font: 700 13px/16px var(--as-font-text); }
+[data-platform="macos"] .as-text-body       { font: 400 13px/16px var(--as-font-text); }
+[data-platform="macos"] .as-text-callout    { font: 400 12px/15px var(--as-font-text); }
+[data-platform="macos"] .as-text-subhead    { font: 400 11px/14px var(--as-font-text); }
+[data-platform="macos"] .as-text-footnote,
+[data-platform="macos"] .as-text-caption1   { font: 400 10px/13px var(--as-font-text); }
+[data-platform="macos"] .as-text-caption2   { font: 500 10px/13px var(--as-font-text); }
+.as-secondary { color: var(--as-label-secondary); }
+.as-tertiary  { color: var(--as-label-tertiary); }
+.as-mono { font-family: var(--as-font-mono); font-variant-numeric: tabular-nums; }
+.as-tabular { font-variant-numeric: tabular-nums; }
+.as-readable { max-width: var(--as-readable-width); }
+
+/* --------------------------------------------------------------------------
+   2. Shapes
+   -------------------------------------------------------------------------- */
+.as-capsule { border-radius: var(--as-radius-capsule); }
+/* Concentric: a container declares --as-container-radius on itself; a child
+   with .as-concentric sets --as-concentric-inset to its distance from the
+   container edge (usually the container padding). Optional minimum radius. */
+.as-container { border-radius: var(--as-container-radius, var(--as-radius-xl)); }
+.as-concentric {
+  border-radius: max(var(--as-concentric-min, 0px),
+                     calc(var(--as-container-radius, var(--as-radius-xl)) - var(--as-concentric-inset, 0px)));
+}
+
+/* --------------------------------------------------------------------------
+   3. Standard materials (content layer only — never for controls/navigation)
+   -------------------------------------------------------------------------- */
+.as-material {
+  background: var(--as-material-regular);
+  -webkit-backdrop-filter: blur(var(--as-material-blur)) saturate(1.8);
+  backdrop-filter: blur(var(--as-material-blur)) saturate(1.8);
+}
+.as-material-ultrathin { background: var(--as-material-ultrathin); }
+.as-material-thin      { background: var(--as-material-thin); }
+.as-material-thick     { background: var(--as-material-thick); }
+/* Vibrant labels/fills on materials (use these instead of plain grays) */
+.as-vibrant            { color: var(--as-label); mix-blend-mode: plus-lighter; }
+.as-vibrant-secondary  { color: var(--as-label-secondary); }
+
+/* --------------------------------------------------------------------------
+   4. Liquid Glass — the material
+   -------------------------------------------------------------------------- */
+.as-glass {
+  --_blur: var(--as-glass-blur);
+  --_fill: var(--as-glass-fill);
+  --_shadow: var(--as-glass-shadow);
+  position: relative;
+  isolation: isolate;
+  border-radius: var(--as-glass-radius, var(--as-radius-capsule));
+  color: var(--as-glass-fg);
+  transform: scale(var(--as-flex-x), var(--as-flex-y));
+  background:
+    /* light entering the lit edge only — transparent by default. A sweep
+       across the whole body is gloss, not glass. */
+    linear-gradient(var(--as-glass-light-angle), var(--as-glass-sheen) 0%, transparent 22%),
+    /* stained-glass tint sits between lens and highlights */
+    linear-gradient(var(--as-glass-tint), var(--as-glass-tint)),
+    var(--_fill);
+  -webkit-backdrop-filter: var(--as-glass-filter, blur(var(--_blur)) saturate(var(--as-glass-saturate)) brightness(var(--as-glass-brightness)) contrast(var(--as-glass-contrast)));
+  backdrop-filter: var(--as-glass-filter, blur(var(--_blur)) saturate(var(--as-glass-saturate)) brightness(var(--as-glass-brightness)) contrast(var(--as-glass-contrast)));
+  box-shadow:
+    var(--_shadow),
+    inset 0 0 0 0.5px var(--as-glass-edge),
+    var(--as-glass-bevel);
+  transition:
+    transform var(--as-dur-base) var(--as-ease-spring),
+    box-shadow var(--as-dur-base) var(--as-ease-soft),
+    background-color var(--as-dur-base) var(--as-ease-soft),
+    color var(--as-dur-base) var(--as-ease-soft),
+    border-radius var(--as-dur-base) var(--as-ease-soft),
+    --as-glass-light-angle var(--as-dur-slow) var(--as-ease-soft);
+}
+/* NOTE: no blanket `will-change: transform`. Every glass element carries a
+   backdrop-filter, and promoting all of them to their own composited layers
+   up front costs far more than it saves — a page with a few dozen glass
+   surfaces drops frames on any drag. Promote only what is actually moving. */
+.as-glass.is-lit, .as-glass.is-pressed, .as-glass-interactive:active { will-change: transform; }
+/* pointer is on/over the element: light tracks it closely */
+.as-glass.is-lit { transition-duration: var(--as-dur-fast); }
+/* Highlights layer: "light sources inside the environment shine on the material
+   producing highlights that respond to geometry… light travels around the
+   material, defining its silhouette" (WWDC25/219). A conic gradient puts two
+   specular poles on opposite edges and rotates them with the light source, so
+   the highlight wraps the shape instead of sliding across a flat face.
+   liquid-glass.js animates --as-glass-light-angle from the pointer.
+   One dominant arc where the light lands, and only a whisper on the far edge:
+   two matched bright poles look symmetrical and decorative, which is what makes
+   a rim read as a drawn outline instead of a catch of light. */
+.as-glass::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 1;
+  padding: var(--as-glass-rim-width, 1px);
+  background: conic-gradient(from var(--as-glass-light-angle) at 50% 50%,
+      var(--as-glass-rim-hi)   0deg,
+      var(--as-glass-rim-lo)  36deg,
+      transparent             88deg,
+      transparent            152deg,
+      color-mix(in srgb, var(--as-glass-rim-lo) 65%, transparent) 180deg,
+      transparent            208deg,
+      transparent            286deg,
+      var(--as-glass-rim-lo) 330deg,
+      var(--as-glass-rim-hi) 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  opacity: .95;
+  transition: opacity var(--as-dur-base) var(--as-ease-soft);
+}
+/* Interactive glow: "illuminates from within, starting under the fingertip" */
+.as-glass::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 1;
+  background:
+    /* hot core right under the fingertip … */
+    radial-gradient(44px 44px at var(--as-px, 50%) var(--as-py, 50%),
+      rgb(255 255 255 / .50), transparent 72%),
+    /* … spreading through the body of the element */
+    radial-gradient(190px 190px at var(--as-px, 50%) var(--as-py, 50%),
+      rgb(255 255 255 / .28), rgb(255 255 255 / .09) 44%, transparent 74%);
+  opacity: var(--as-glow, 0);
+  transition: opacity var(--as-dur-base) var(--as-ease-soft);
+}
+.as-glass > * { position: relative; z-index: 2; }
+
+/* Variants */
+.as-glass-clear {
+  /* Clear: permanently more transparent, no luminosity adaptation. Needs bold,
+     bright content on top and (if the background is bright) a 35% dimming layer. */
+  --_fill: rgb(0 0 0 / 0);
+  --_blur: 3px;
+  color: rgb(255 255 255 / .96);
+  --as-glass-rim-hi: rgb(255 255 255 / .48);
+  --as-glass-rim-lo: rgb(255 255 255 / .10);
+}
+.as-glass-clear.as-glass-dimmed { --_fill: rgb(0 0 0 / .35); }
+.as-glass-large {
+  /* Sidebars, menus, sheets, popovers: thicker material, deeper shadows, more
+     opaque, softer scattering. Does NOT flip light/dark with content. */
+  --_blur: var(--as-glass-blur-large);
+  --_fill: var(--as-glass-fill-large);
+  --_shadow: var(--as-glass-shadow-large);
+  --as-glass-radius: var(--as-radius-xl);
+}
+.as-glass-tinted, .as-glass-prominent {
+  /* Stained glass. Tint the BACKGROUND (not the label) for primary actions. */
+  --as-glass-tint: color-mix(in oklab, var(--as-tint, var(--as-accent)) 78%, transparent);
+  color: #fff;
+  --as-glass-rim-hi: rgb(255 255 255 / .46);
+}
+/* Adaptivity: small elements flip light/dark based on what's behind them.
+   liquid-glass.js sets data-glass-scheme by sampling the backdrop; or set it
+   yourself when you know the content region is dark/light. */
+.as-glass[data-glass-scheme="dark"]  { --_fill: rgb(40 40 44 / .42); --as-glass-fg: rgb(255 255 255 / .94); --as-glass-fg-secondary: rgb(255 255 255 / .62); --as-glass-rim-hi: rgb(255 255 255 / .26); --as-glass-rim-lo: rgb(255 255 255 / .05); color: var(--as-glass-fg); }
+.as-glass[data-glass-scheme="light"] { --_fill: rgb(255 255 255 / .42); --as-glass-fg: rgb(0 0 0 / .88); --as-glass-fg-secondary: rgb(0 0 0 / .55); --as-glass-rim-hi: rgb(255 255 255 / .58); --as-glass-rim-lo: rgb(255 255 255 / .14); color: var(--as-glass-fg); }
+.as-glass[data-glass-over="text"] { --_shadow: 0 10px 28px -6px rgb(0 0 0 / .34), 0 2px 6px -2px rgb(0 0 0 / .2); }
+/* Focus recedes: window/pane loses focus → glass visually recedes */
+.as-glass[data-glass-focus="inactive"] { opacity: .78; --_shadow: 0 2px 8px -2px rgb(0 0 0 / .1); }
+
+/* Interactivity (Glass.interactive / .glass button style): flex + energize */
+.as-glass-interactive { cursor: pointer; -webkit-tap-highlight-color: transparent; user-select: none; }
+.as-glass-interactive:hover  { --as-glow: .28; --as-glass-rim-width: 1.25px; }
+.as-glass-interactive:active, .as-glass-interactive.is-pressed {
+  --as-glow: 1;
+  /* gel flex: expands slightly and flattens, then springs back */
+  --as-flex-x: var(--as-flex-press-x);
+  --as-flex-y: var(--as-flex-press-y);
+  transition-duration: var(--as-dur-fast);
+}
+.as-glass-interactive:focus-visible { outline: 3px solid color-mix(in oklab, var(--as-accent) 60%, transparent); outline-offset: 2px; }
+
+/* Glass groups: several items share ONE glass background (toolbar groups,
+   tab bars). Children must NOT be glass themselves — never glass on glass. */
+.as-glass-group { display: inline-flex; align-items: center; gap: 2px; padding: 4px; }
+.as-glass-group > .as-glass { display: none !important; } /* guard: no nested glass */
+.as-glass-group > .as-item {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-width: calc(var(--as-hit-min) - 8px); min-height: calc(var(--as-hit-min) - 8px);
+  padding: 0 14px; border-radius: var(--as-radius-capsule); border: 0; background: transparent;
+  color: inherit; font: 500 15px/20px var(--as-font-text); letter-spacing: -.24px; cursor: pointer;
+  transition: background var(--as-dur-fast) var(--as-ease-soft), transform var(--as-dur-base) var(--as-ease-spring);
+}
+.as-glass-group > .as-item:hover { background: rgb(128 128 128 / .12); }
+.as-glass-group > .as-item:active { transform: scale(.94); }
+.as-glass-group > .as-item[aria-pressed="true"], .as-glass-group > .as-item.is-selected {
+  background: light-dark(rgb(255 255 255 / .85), rgb(255 255 255 / .16));
+  box-shadow: 0 1px 4px rgb(0 0 0 / .12);
+}
+.as-glass-group > .as-item.is-selected { color: var(--as-accent); }
+
+/* Element lifts INTO glass only while interacting (sliders, toggles knobs) */
+.as-glass-transient { transition: all var(--as-dur-base) var(--as-ease-spring); }
+.as-glass-transient:not(:active):not(.is-dragging) { -webkit-backdrop-filter: none; backdrop-filter: none; box-shadow: 0 1px 3px rgb(0 0 0 / .15); }
+
+/* Dimming layer for clear glass / modality */
+.as-dim { position: absolute; inset: 0; background: rgb(0 0 0 / .35); pointer-events: none; }
+
+/* --------------------------------------------------------------------------
+   5. Scroll edge effect (replaces bar backgrounds & hard dividers)
+   -------------------------------------------------------------------------- */
+.as-scroll-edge {
+  position: sticky; z-index: 10; background: transparent; pointer-events: none;
+}
+.as-scroll-edge > * { pointer-events: auto; }
+.as-scroll-edge::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none; z-index: -1;
+  /* soft style: blur + fade content into the background near the edge */
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-mask-image: linear-gradient(to bottom, #000 30%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 30%, transparent 100%);
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--as-bg) 70%, transparent), transparent);
+}
+.as-scroll-edge.as-edge-top    { top: 0; padding-bottom: 8px; }
+.as-scroll-edge.as-edge-bottom { bottom: 0; padding-top: 8px; }
+.as-scroll-edge.as-edge-bottom::before { -webkit-mask-image: linear-gradient(to top, #000 30%, transparent); mask-image: linear-gradient(to top, #000 30%, transparent); background: linear-gradient(to top, color-mix(in srgb, var(--as-bg) 70%, transparent), transparent); }
+/* hard style (macOS, pinned headers): uniform, more opaque, no gradient */
+.as-scroll-edge.as-edge-hard::before { -webkit-mask-image: none; mask-image: none; background: color-mix(in srgb, var(--as-bg) 80%, transparent); box-shadow: 0 .5px 0 var(--as-separator); }
+
+/* --------------------------------------------------------------------------
+   6. Components
+   -------------------------------------------------------------------------- */
+/* Buttons — sizes mini/small/regular/large/xlarge, capsule by default */
+.as-button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: var(--as-hit-min); padding: 0 20px; border: 0; border-radius: var(--as-radius-capsule);
+  font: 500 17px/22px var(--as-font-text); letter-spacing: -.43px; color: var(--as-accent);
+  background: transparent; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  transition: transform var(--as-dur-base) var(--as-ease-spring), opacity var(--as-dur-fast), background var(--as-dur-fast);
+}
+.as-button:active { transform: scale(.96); opacity: .7; }           /* always a press state */
+.as-button:disabled { opacity: .35; pointer-events: none; }
+.as-button-filled { background: var(--as-accent); color: #fff; }
+.as-button-tinted { background: color-mix(in oklab, var(--as-accent) 15%, transparent); }
+.as-button-gray   { background: var(--as-fill); color: var(--as-label); }
+.as-button-bordered { box-shadow: inset 0 0 0 1px var(--as-separator-opaque); color: var(--as-label); }
+.as-button-glass  { /* compose: class="as-glass as-glass-interactive as-button as-button-glass" */
+  color: var(--as-glass-fg);
+  background: linear-gradient(var(--as-glass-tint), var(--as-glass-tint)), var(--_fill); }
+.as-button-glass.as-glass-tinted, .as-button-glass.as-glass-prominent, .as-button-glass.as-glass-clear { color: #fff; }
+.as-button-glass:active { transform: scale(var(--as-flex-x), var(--as-flex-y)); opacity: 1; }
+.as-button-mini   { min-height: 28px; padding: 0 12px; font-size: 13px; line-height: 18px; }
+.as-button-small  { min-height: 32px; padding: 0 14px; font-size: 15px; line-height: 20px; }
+.as-button-large  { min-height: 50px; padding: 0 24px; }
+.as-button-xlarge { min-height: 60px; padding: 0 28px; font-size: 20px; line-height: 25px; }
+.as-button-icon   { width: var(--as-hit-min); padding: 0; }
+.as-button-destructive { color: var(--as-red); }
+.as-button-destructive.as-button-filled { background: var(--as-red); color: #fff; }
+[data-platform="macos"] .as-button { min-height: 22px; padding: 0 12px; font-size: 13px; line-height: 16px; border-radius: var(--as-radius-xs); }
+[data-platform="macos"] .as-button-large, [data-platform="macos"] .as-button-xlarge { border-radius: var(--as-radius-capsule); }
+
+/* Toolbar: transparent bar; items float in glass groups; scroll edge under it */
+.as-toolbar { display: flex; align-items: center; gap: 12px; padding: 8px var(--as-margin); min-height: 60px; }
+.as-toolbar .as-spacer { flex: 1; }
+.as-toolbar .as-glass-group > .as-item { padding: 0 12px; }
+.as-toolbar .as-item svg { width: 20px; height: 20px; }
+.as-toolbar-title { font: 600 17px/22px var(--as-font-text); letter-spacing: -.43px; color: var(--as-label); }
+/* Opt-in (HIG Navigation bars): large title while the view is at the top, the
+   standard title only once that large title has scrolled away — otherwise the
+   same words sit on screen twice. Add `data-reveal-on-scroll` to the toolbar
+   title (optional value = selector of the large title, default .as-large-title)
+   and LiquidGlass.init() wires the observer. */
+.as-toolbar-title[data-reveal-on-scroll] {
+  opacity: 0; transform: translateY(6px);
+  transition: opacity var(--as-dur-base) var(--as-ease-soft), transform var(--as-dur-base) var(--as-ease-soft);
+}
+.as-toolbar-title[data-reveal-on-scroll].is-visible { opacity: 1; transform: none; }
+
+/* Tab bar (iOS): floating capsule, search tab separate at trailing end */
+.as-tabbar { position: fixed; left: 0; right: 0; bottom: max(12px, env(safe-area-inset-bottom)); display: flex; justify-content: center; gap: 10px; padding: 0 var(--as-margin); z-index: 20; pointer-events: none; }
+.as-tabbar > * { pointer-events: auto; }
+.as-tabbar .as-glass-group { padding: 5px; gap: 0; transition: transform var(--as-dur-slow) var(--as-ease-spring), width var(--as-dur-slow) var(--as-ease-spring); }
+.as-tabbar .as-tab { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-width: 64px; min-height: 48px; padding: 4px 10px; border: 0; border-radius: var(--as-radius-capsule); background: transparent; color: var(--as-glass-fg-secondary); font: 500 10px/12px var(--as-font-text); cursor: pointer; transition: color var(--as-dur-fast), background var(--as-dur-base) var(--as-ease-spring), transform var(--as-dur-base) var(--as-ease-spring); }
+.as-tabbar .as-tab svg { width: 24px; height: 24px; }
+.as-tabbar .as-tab:active { transform: scale(.92); }
+/* A focus ring tuned for glass — the UA default is drawn for opaque surfaces
+   and disappears against a bright backdrop behind the bar. */
+.as-tabbar .as-tab:focus-visible,
+.as-glass-group > .as-item:focus-visible { outline: 3px solid color-mix(in oklab, var(--as-accent) 65%, transparent); outline-offset: -2px; }
+.as-tabbar .as-tab.is-selected { color: var(--as-accent); background: light-dark(rgb(255 255 255 / .9), rgb(255 255 255 / .14)); box-shadow: 0 1px 4px rgb(0 0 0 / .12); }
+.as-tabbar .as-tab-search { width: 56px; height: 56px; min-width: 0; padding: 0; }
+/* minimize on scroll: liquid-glass.js toggles .is-minimized */
+.as-tabbar.is-minimized .as-glass-group { transform: translateY(8px) scale(.82); opacity: .9; }
+.as-tabbar.is-minimized .as-tab:not(.is-selected):not(.as-tab-search) { display: none; }
+.as-tabbar.is-minimized .as-tab-search { width: 46px; height: 46px; }
+.as-tabbar.is-minimized .as-tab span { display: none; }
+
+/* Tab bar ↔ sidebar: ONE navigational element that scales with width
+   (`sidebarAdaptable` / `UITabBarController.Mode.tabSidebar`). Opt in with
+   `data-sidebar` on the .as-tabbar; it takes effect at regular width.
+   The radius override is the point: .as-glass defaults to a capsule, which is
+   right for a short horizontal pill and wrong the moment the surface becomes
+   tall — a 216×198 capsule is a 99px lozenge, not a sidebar. Large glass is a
+   rounded rectangle (same radius .as-glass-large uses). */
+@media (min-width: 1024px) {
+  .as-tabbar[data-sidebar] {
+    flex-direction: column; justify-content: flex-start; align-items: stretch;
+    inset-block: 12px max(12px, env(safe-area-inset-bottom));
+    inset-inline: 12px auto;   /* leading edge, mirrors in RTL */
+    width: var(--as-tabsidebar-width); padding: 0;
+  }
+  .as-tabbar[data-sidebar] .as-glass-group {
+    --as-glass-radius: var(--as-radius-xl);
+    --as-tabsidebar-pad: 8px;
+    flex-direction: column; align-items: stretch; padding: var(--as-tabsidebar-pad); gap: 2px;
+  }
+  .as-tabbar[data-sidebar] .as-tab {
+    flex-direction: row; justify-content: flex-start; gap: 10px;
+    min-height: var(--as-hit-min); padding: 0 12px;
+    /* Concentric: the selected-row highlight is inset by the group padding, so
+       its radius is the group radius MINUS that inset. A fixed small radius
+       here reads as flared corners inside the rounded group — the single most
+       visible concentricity bug in a sidebar. */
+    border-radius: max(0px, calc(var(--as-glass-radius) - var(--as-tabsidebar-pad)));
+    font: 500 15px/20px var(--as-font-text);
+  }
+  .as-tabbar[data-sidebar] .as-tab svg { width: 20px; height: 20px; }
+  .as-tabbar[data-sidebar] .as-tab span { font-size: 15px; line-height: 20px; }
+  .as-tabbar[data-sidebar] .as-tab-search { width: auto; height: auto; min-width: 0; min-height: var(--as-hit-min); padding: 0 12px; border-radius: max(0px, calc(var(--as-glass-radius) - var(--as-tabsidebar-pad))); }
+  .as-tabbar[data-sidebar] .as-badge { position: static; margin-inline-start: auto; }
+  /* minimize-on-scroll is a compact-width behavior; a sidebar stays put.
+     The :not() chain mirrors the compact rules above so these win on
+     specificity rather than on source order alone. */
+  .as-tabbar[data-sidebar].is-minimized .as-glass-group { transform: none; opacity: 1; }
+  .as-tabbar[data-sidebar].is-minimized .as-tab:not(.is-selected):not(.as-tab-search) { display: inline-flex; }
+  .as-tabbar[data-sidebar].is-minimized .as-tab span { display: inline; }
+  .as-tabbar[data-sidebar].is-minimized .as-tab-search { width: auto; height: auto; min-height: var(--as-hit-min); }
+  /* content inset: put this on the element that owns the page padding */
+  .as-with-tabsidebar { padding-inline-start: calc(var(--as-tabsidebar-width) + 24px); }
+  .as-with-tabsidebar.as-safe-bottom { padding-bottom: max(40px, env(safe-area-inset-bottom)); }
+}
+
+/* Sidebar (iPad/Mac): inset floating glass; content extends beneath */
+/* Logical inset so the sidebar lands on the leading edge in RTL too. */
+.as-sidebar { position: absolute; inset-block: 12px; inset-inline: 12px auto; width: 280px; --as-sidebar-pad: 12px; padding: var(--as-sidebar-pad); overflow: auto; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 2px; z-index: 15; }
+/* Same button reset as the menu item: sidebar rows are navigation targets, so
+   they are <button> or <a>, not <div>. */
+.as-sidebar .as-row { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px; padding: 0 12px; box-sizing: border-box; appearance: none; -webkit-appearance: none; border: 0; background: transparent; border-radius: max(0px, calc(var(--as-glass-radius, var(--as-radius-xl)) - var(--as-sidebar-pad, 12px))); color: var(--as-glass-fg); font: 400 15px/20px var(--as-font-text); text-align: start; text-decoration: none; cursor: pointer; }
+.as-sidebar .as-row:hover { background: rgb(128 128 128 / .12); }
+.as-sidebar .as-row:focus-visible { outline: 3px solid color-mix(in oklab, var(--as-accent) 60%, transparent); outline-offset: -2px; }
+.as-sidebar .as-row.is-selected { background: light-dark(rgb(0 0 0 / .08), rgb(255 255 255 / .14)); font-weight: 600; }
+.as-sidebar .as-row svg { width: 20px; height: 20px; color: var(--as-accent); }
+.as-sidebar .as-section-title { padding: 14px 12px 6px; font: 600 13px/18px var(--as-font-text); color: var(--as-glass-fg-secondary); }
+.as-with-sidebar { padding-left: 304px; }
+/* Background extension effect: mirror + blur content beneath sidebar/inspector */
+.as-bg-extension { position: absolute; inset: 0 auto 0 0; width: 304px; overflow: hidden; z-index: 0; }
+.as-bg-extension > img, .as-bg-extension > * { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); filter: blur(24px) saturate(1.2); }
+
+/* Sheet: inset half-sheet with large radius; becomes opaque at full height */
+.as-sheet-backdrop { position: fixed; inset: 0; background: rgb(0 0 0 / .30); z-index: 30; opacity: 0; pointer-events: none; transition: opacity var(--as-dur-base) var(--as-ease-soft); }
+.as-sheet-backdrop.is-open { opacity: 1; pointer-events: auto; }
+/* overscroll-behavior: reaching the end of a sheet/menu/sidebar must not hand
+   the scroll to the page behind it. */
+.as-sheet { position: fixed; left: 8px; right: 8px; bottom: 8px; max-height: 60vh; z-index: 31; padding: 8px 20px 24px; overflow: auto; overscroll-behavior: contain;
+  --as-glass-radius: var(--as-radius-sheet); transform: translateY(110%); transition: transform var(--as-dur-slow) var(--as-ease-spring), border-radius var(--as-dur-base), background var(--as-dur-base), left var(--as-dur-base), right var(--as-dur-base), bottom var(--as-dur-base), max-height var(--as-dur-slow) var(--as-ease-spring); }
+.as-sheet.is-open { transform: translateY(0); }
+.as-sheet.is-full { left: 0; right: 0; bottom: 0; max-height: 100vh; --as-glass-radius: var(--as-radius-sheet) var(--as-glass-radius, 0) 0 0; border-radius: var(--as-radius-sheet) var(--as-radius-sheet) 0 0; --_fill: var(--as-bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
+.as-sheet .as-grabber { width: 36px; height: 5px; margin: 6px auto 14px; border-radius: 3px; background: var(--as-label-tertiary); }
+.as-sheet .as-sheet-title { text-align: left; font: 700 20px/25px var(--as-font-display); margin: 0 0 12px; }  /* bolder, left-aligned */
+
+/* Menu / popover: pops open from its source; thicker glass; icons lead items */
+.as-menu { position: absolute; min-width: 250px; max-height: min(70dvh, 520px); overflow: auto; overscroll-behavior: contain; padding: 6px; z-index: 40; transform-origin: var(--as-origin, top left); --as-glass-radius: var(--as-radius-l);
+  opacity: 0; transform: scale(.4); pointer-events: none; transition: transform var(--as-dur-base) var(--as-ease-spring), opacity var(--as-dur-fast); }
+.as-menu.is-open { opacity: 1; transform: none; pointer-events: auto; }
+/* The item must work as a real <button role="menuitem"> — the menu keyboard
+   model (arrow keys, Escape, Tab) needs a focusable element, and a bare <div>
+   is not one. So the UA button chrome (buttonface background, 2px outset
+   border, shrink-to-fit width, system font) has to be reset here, exactly as
+   .as-item / .as-tab / .as-segment / .as-button already do. Without this a
+   correctly-marked-up menu renders as a stack of gray OS buttons on glass. */
+.as-menu .as-menu-item { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 44px; padding: 0 12px; box-sizing: border-box; appearance: none; -webkit-appearance: none; border: 0; background: transparent; border-radius: var(--as-radius-m); color: var(--as-glass-fg); font: 400 17px/22px var(--as-font-text); letter-spacing: -.43px; text-align: start; cursor: pointer; }
+.as-menu .as-menu-item:hover { background: rgb(128 128 128 / .14); }
+.as-menu .as-menu-item:focus-visible { outline: 3px solid color-mix(in oklab, var(--as-accent) 60%, transparent); outline-offset: -2px; }
+.as-menu .as-menu-item svg { width: 20px; height: 20px; opacity: .9; }
+.as-menu .as-menu-item .as-shortcut { margin-left: auto; color: var(--as-glass-fg-secondary); font-size: 15px; }
+.as-menu .as-menu-item.as-destructive { color: var(--as-red); }
+.as-menu .as-menu-sep { height: .5px; margin: 6px 0; background: var(--as-separator); }
+[data-platform="macos"] .as-menu .as-menu-item { min-height: 28px; font-size: 13px; line-height: 16px; border-radius: var(--as-radius-xs); }
+
+/* Alert: bolder, left-aligned text */
+.as-alert { width: 270px; padding: 20px 16px 8px; --as-glass-radius: var(--as-radius-xl); text-align: left; }
+.as-alert h2 { margin: 0 0 4px; font: 700 17px/22px var(--as-font-text); letter-spacing: -.43px; }
+.as-alert p  { margin: 0 0 16px; font: 400 13px/18px var(--as-font-text); color: var(--as-glass-fg-secondary); }
+.as-alert .as-actions { display: flex; gap: 8px; margin: 0 -8px; }
+.as-alert .as-actions .as-button { flex: 1; }
+
+/* --------------------------------------------------------------------------
+   6a. Scrubbable controls
+   These are content-layer controls, so they are quiet at rest and only *lift
+   into glass while being manipulated* (WWDC25/219). All three are draggable —
+   on Apple platforms you press the selected segment / the switch knob / the
+   slider thumb and slide, and the control tracks your finger 1:1, stretching
+   with the drag and settling on a spring. liquid-glass.js adds the indicator
+   and the gesture; the CSS below degrades to click-only without it.
+   -------------------------------------------------------------------------- */
+
+/* Segmented control: selection lifts into glass and can be dragged */
+.as-segmented { display: inline-flex; padding: 3px; gap: 2px; border-radius: var(--as-radius-capsule); background: var(--as-fill-tertiary); position: relative; touch-action: pan-y; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; contain: layout style; }
+.as-segmented .as-segment { position: relative; z-index: 1; min-height: 32px; padding: 0 16px; border: 0; border-radius: var(--as-radius-capsule); background: transparent; color: var(--as-label); font: 500 15px/20px var(--as-font-text); letter-spacing: -.24px; cursor: pointer; transition: color var(--as-dur-fast) var(--as-ease-soft); }
+/* fallback selection when JS has not upgraded the control */
+.as-segmented .as-segment.is-selected { background: light-dark(rgb(255 255 255), rgb(99 99 102)); box-shadow: 0 2px 6px rgb(0 0 0 / .14), inset 0 0 0 .5px rgb(255 255 255 / .5); }
+.as-segmented .as-segment:active { transform: scale(1.04); }
+/* upgraded: one sliding indicator carries the selection */
+.as-segmented[data-indicator] .as-segment.is-selected { background: transparent; box-shadow: none; }
+.as-segmented[data-indicator] .as-segment:active { transform: none; }
+.as-seg-indicator {
+  position: absolute; top: 3px; left: 0; height: calc(100% - 6px); width: 0; z-index: 0;
+  border-radius: var(--as-radius-capsule); pointer-events: none;
+  background: light-dark(rgb(255 255 255), rgb(99 99 102));
+  box-shadow: 0 2px 6px rgb(0 0 0 / .14), inset 0 0 0 .5px rgb(255 255 255 / .5);
+  transform: translateX(var(--as-ind-x, 0px)) scaleX(var(--as-ind-sx, 1));
+  transition: transform var(--as-dur-base) var(--as-ease-spring), width var(--as-dur-base) var(--as-ease-spring);
+}
+/* promote the moving part on press, before it starts moving, so the first
+   frame of the drag is not spent creating a layer */
+.as-segmented:active .as-seg-indicator, .as-segmented.is-scrubbing .as-seg-indicator,
+.as-toggle:active .as-knob, .as-toggle.is-scrubbing .as-knob,
+.as-slider:active ~ .as-slider-knob, .as-slider-knob.is-scrubbing { will-change: transform; }
+/* while the finger is down the indicator follows it 1:1 — no transition, and
+   it lifts into glass so the label underneath stays readable through it */
+.as-segmented.is-scrubbing .as-seg-indicator {
+  transition: none;
+  background: light-dark(rgb(255 255 255 / .72), rgb(120 120 124 / .72));
+  -webkit-backdrop-filter: blur(3px) saturate(1.7) brightness(1.06);
+  backdrop-filter: blur(3px) saturate(1.7) brightness(1.06);
+  box-shadow: 0 6px 18px rgb(0 0 0 / .2), inset 0 0 0 1px rgb(255 255 255 / .7);
+}
+
+/* Toggle (switch): capsule mirrors slider proportions; knob is draggable and
+   lifts into glass while held */
+.as-toggle { position: relative; width: 51px; height: 31px; border: 0; padding: 0; border-radius: var(--as-radius-capsule); background: var(--as-fill); cursor: pointer; transition: background var(--as-dur-base) var(--as-ease-soft); -webkit-tap-highlight-color: transparent; touch-action: pan-y; }
+.as-toggle[aria-checked="true"] { background: var(--as-green); }
+.as-toggle .as-knob { position: absolute; top: 2px; left: 2px; width: var(--as-knob-w, 27px); height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 3px 8px rgb(0 0 0 / .15), 0 1px 1px rgb(0 0 0 / .16); transform: translateX(var(--as-knob-x, 0px)); transition: transform var(--as-dur-base) var(--as-ease-spring), width var(--as-dur-base) var(--as-ease-spring); }
+.as-toggle[aria-checked="true"] { --as-knob-x: 20px; }
+.as-toggle:active { --as-knob-w: 33px; }
+.as-toggle[aria-checked="true"]:active { --as-knob-x: 14px; }
+.as-toggle.is-scrubbing .as-knob { transition: width var(--as-dur-base) var(--as-ease-spring); }
+.as-toggle.is-scrubbing { --as-knob-w: 33px; }
+
+/* Slider: the thumb turns into a transparent liquid lens while dragged, so you
+   can watch the value underneath. JS hides the native thumb and overlays
+   .as-slider-knob as a sibling — the input keeps its own box, so it goes on
+   contributing its intrinsic width to whatever grid or flex row it sits in.
+   The bare input below is the no-JS fallback. */
+.as-slider { -webkit-appearance: none; appearance: none; width: 100%; height: 44px; background: transparent; margin: 0; touch-action: pan-y; }
+.as-slider::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: linear-gradient(to right, var(--as-accent) var(--as-value, 50%), var(--as-fill) var(--as-value, 50%)); }
+.as-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 28px; height: 28px; margin-top: -11px; border-radius: 50%; background: #fff; box-shadow: 0 3px 8px rgb(0 0 0 / .15), 0 1px 1px rgb(0 0 0 / .16); transition: transform var(--as-dur-base) var(--as-ease-spring); }
+.as-slider:active::-webkit-slider-thumb { transform: scaleX(1.35); background: rgb(255 255 255 / .6); box-shadow: 0 6px 16px rgb(0 0 0 / .18), inset 0 0 0 1px rgb(255 255 255 / .8); }
+.as-slider::-moz-range-track { height: 6px; border-radius: 3px; background: var(--as-fill); }
+.as-slider::-moz-range-progress { height: 6px; border-radius: 3px; background: var(--as-accent); }
+.as-slider::-moz-range-thumb { width: 28px; height: 28px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 3px 8px rgb(0 0 0 / .15); }
+/* upgraded */
+.as-slider.is-upgraded::-webkit-slider-thumb { opacity: 0; }
+.as-slider.is-upgraded::-moz-range-thumb { opacity: 0; }
+.as-slider-knob {
+  position: absolute; z-index: 1;
+  left: var(--as-knob-l, 0px); top: var(--as-knob-y, 50%);
+  width: 28px; height: 28px; margin-left: -14px;
+  border-radius: 50%; pointer-events: none; background: #fff;
+  box-shadow: 0 3px 8px rgb(0 0 0 / .15), 0 1px 1px rgb(0 0 0 / .16);
+  transform: translate(var(--as-knob-x, 0px), -50%) scaleX(var(--as-knob-sx, 1));
+  transition: background var(--as-dur-base) var(--as-ease-soft),
+              box-shadow var(--as-dur-base) var(--as-ease-soft),
+              transform var(--as-dur-base) var(--as-ease-spring);
+}
+/* transient lift: only while the value is being changed */
+.as-slider-knob.is-scrubbing {
+  transition: background var(--as-dur-fast), box-shadow var(--as-dur-fast);
+  background: rgb(255 255 255 / .38);
+  -webkit-backdrop-filter: blur(1px) saturate(1.8) brightness(1.08);
+  backdrop-filter: blur(1px) saturate(1.8) brightness(1.08);
+  box-shadow: 0 8px 20px rgb(0 0 0 / .2), inset 0 0 0 1px rgb(255 255 255 / .85);
+}
+.as-slider-knob.is-focused { box-shadow: 0 3px 8px rgb(0 0 0 / .15), 0 0 0 3px color-mix(in oklab, var(--as-accent) 55%, transparent); }
+
+/* Search field: own glass surface (compose with .as-glass) */
+.as-search { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px; }
+/* The input drops its own outline so the ring can wrap the whole glass pill
+   instead of the bare text box — but the ring has to come back somewhere, or
+   keyboard users lose the field entirely. Never `outline: none` alone. */
+.as-search:focus-within { outline: 3px solid color-mix(in oklab, var(--as-accent) 60%, transparent); outline-offset: 2px; }
+.as-search input { flex: 1; border: 0; background: transparent; color: inherit; font: 400 17px/22px var(--as-font-text); outline: none; }
+.as-search input::placeholder { color: var(--as-glass-fg-secondary); }
+.as-search svg { width: 18px; height: 18px; color: var(--as-glass-fg-secondary); }
+
+/* Inset grouped list: larger radius and row height (iOS 26) */
+.as-list { margin: 0 var(--as-margin); padding: 0; list-style: none; border-radius: var(--as-radius-xl); background: var(--as-bg-grouped-2); overflow: hidden; }
+.as-list li { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 16px; font: 400 17px/22px var(--as-font-text); letter-spacing: -.43px; }
+.as-list li + li { box-shadow: inset 0 .5px 0 var(--as-separator); }
+.as-list li .as-value { margin-left: auto; color: var(--as-label-secondary); }
+.as-list-header { margin: 24px calc(var(--as-margin) + 16px) 8px; font: 400 13px/18px var(--as-font-text); color: var(--as-label-secondary); text-transform: none; } /* title-style capitalization, not ALL CAPS */
+.as-grouped { background: var(--as-bg-grouped); }
+
+/* Badge / status */
+.as-badge { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--as-red); color: #fff; font: 600 12px/18px var(--as-font-text); text-align: center; }
+
+/* Navigation bar large title */
+.as-navbar { display: flex; flex-direction: column; padding: 0 var(--as-margin); }
+.as-navbar .as-large-title { font: 700 34px/41px var(--as-font-display); letter-spacing: .4px; margin: 4px 0 8px; }
+
+/* --------------------------------------------------------------------------
+   7. Accessibility + user preferences (applied system-wide, automatically)
+   -------------------------------------------------------------------------- */
+/* Reduce Transparency → frostier, obscures more of what's behind */
+@media (prefers-reduced-transparency: reduce) {
+  .as-glass { --_fill: light-dark(rgb(245 245 247 / .92), rgb(44 44 46 / .92)); --_blur: 40px; }
+  .as-glass::before { opacity: .5; }
+  .as-glass-clear { --_fill: rgb(0 0 0 / .6); }
+  .as-segmented.is-scrubbing .as-seg-indicator,
+  .as-slider-knob.is-scrubbing { -webkit-backdrop-filter: none; backdrop-filter: none; background: light-dark(rgb(255 255 255 / .96), rgb(120 120 124 / .96)); }
+}
+:root[data-liquid-glass="tinted"] .as-glass { --_fill: light-dark(rgb(245 245 247 / .80), rgb(44 44 46 / .82)); } /* user-preferred "Tinted" look */
+/* Increase Contrast → predominantly black/white with a contrasting border */
+@media (prefers-contrast: more) {
+  .as-glass {
+    --_fill: light-dark(rgb(255 255 255 / .96), rgb(0 0 0 / .96));
+    --_blur: 0px; --as-glass-filter: none;
+    --as-glass-brightness: 1; --as-glass-contrast: 1; --as-glass-sheen: transparent;
+    /* The fill stops following the backdrop here, so the label has to follow
+       the fill: an element that adapt() marked dark would otherwise keep white
+       text on now-white glass. */
+    --as-glass-fg: var(--as-label); --as-glass-fg-secondary: var(--as-label-secondary);
+    color: var(--as-label);
+    box-shadow: var(--_shadow), inset 0 0 0 1.5px var(--as-label);
+  }
+  .as-glass[data-glass-scheme] { --as-glass-fg: var(--as-label); --as-glass-fg-secondary: var(--as-label-secondary); color: var(--as-label); }
+  .as-glass::before, .as-glass::after { display: none; }
+  .as-glass-tinted, .as-glass-prominent,
+  .as-glass-tinted[data-glass-scheme], .as-glass-prominent[data-glass-scheme] { --as-glass-tint: var(--as-tint, var(--as-accent)); color: #fff; }
+  .as-glass-clear, .as-glass-clear[data-glass-scheme] { --as-glass-fg: #fff; color: #fff; }
+  .as-segmented.is-scrubbing .as-seg-indicator,
+  .as-slider-knob.is-scrubbing { -webkit-backdrop-filter: none; backdrop-filter: none; background: light-dark(#fff, #000); box-shadow: inset 0 0 0 1.5px var(--as-label); }
+}
+/* Reduce Motion → no elastic / morphing, keep opacity changes */
+@media (prefers-reduced-motion: reduce) {
+  .as-glass, .as-glass *, .as-button, .as-sheet, .as-menu, .as-toggle .as-knob,
+  .as-tabbar .as-glass-group, .as-seg-indicator, .as-slider-knob,
+  .as-toolbar-title[data-reveal-on-scroll] { transition-duration: 1ms !important; }
+  .as-toolbar-title[data-reveal-on-scroll] { transform: none; }
+  /* no elastic: keep the illumination, drop the flex and the drag stretch */
+  .as-glass-interactive:active, .as-glass-interactive.is-pressed { --as-flex-x: 1; --as-flex-y: 1; }
+  .as-seg-indicator { --as-ind-sx: 1 !important; }
+  .as-slider-knob { --as-knob-sx: 1 !important; }
+}
+/* Forced colors (Windows High Contrast) */
+@media (forced-colors: active) { .as-glass { background: Canvas; color: CanvasText; border: 1px solid CanvasText; -webkit-backdrop-filter: none; backdrop-filter: none; } .as-glass::before, .as-glass::after { display: none; } }
+/* No backdrop-filter support → solid material fallback */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .as-glass { --_fill: light-dark(rgb(250 250 252 / .94), rgb(40 40 44 / .94)); }
+}
+
+/* Utilities */
+.as-icon { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.as-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.as-safe-bottom { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
