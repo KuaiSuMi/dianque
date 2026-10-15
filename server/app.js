@@ -43,6 +43,7 @@ export class Dianque {
       CREATE TABLE IF NOT EXISTS admins (user_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS announcements (id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL, published INTEGER NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS riichi_voices (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, audio BLOB NOT NULL);
+      CREATE TABLE IF NOT EXISTS riichi_voice_volumes (voice_id TEXT PRIMARY KEY, volume INTEGER NOT NULL CHECK(volume BETWEEN 0 AND 100));
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
       CREATE TABLE IF NOT EXISTS rooms (code TEXT PRIMARY KEY, payload TEXT NOT NULL);

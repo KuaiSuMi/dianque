@@ -1,7 +1,9 @@
 :root {font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;color-scheme:light dark;color:var(--text);background:var(--bg);font-synthesis:none;text-rendering:optimizeLegibility;--bg:light-dark(#f5f5f7,#111113);--surface:light-dark(#fff,#222225);--raised:light-dark(#f0f0f3,#303034);--screen:var(--raised);--text:light-dark(#1d1d1f,#f5f5f7);--muted:light-dark(#6b6b72,#aaaab2);--line:light-dark(#e3e4e8,#3a3a40);--mint:light-dark(#216b51,#97ddbc);--mint-soft:light-dark(#e8f2ed,#22392f);--console:light-dark(#edf2ef,#191f1c);--primary:light-dark(#246f54,#9bdcbb);--on-primary:light-dark(#fff,#123526);--amber:light-dark(#856015,#e5c37c);--amber-soft:light-dark(#f5efde,#3e3520);--danger:light-dark(#bc353c,#ffb3b6);--danger-soft:light-dark(#fce9ea,#3f2529);--as-accent:var(--mint);--ease-out:cubic-bezier(.23,1,.32,1);
 }
 * { box-sizing: border-box; }
-html { -webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%; overscroll-behavior: none; scrollbar-color: var(--line) var(--bg);scrollbar-gutter:stable; }
+html { -webkit-tap-highlight-color: transparent; -webkit-text-size-adjust: 100%; overscroll-behavior: none; }
+html, .sheet { scrollbar-width: none; }
+html::-webkit-scrollbar, .sheet::-webkit-scrollbar { display: none; }
 body { margin: 0; min-width: 320px; }
 button, input, select { font: inherit; }
 button, a { touch-action: manipulation; }
@@ -474,6 +476,8 @@ input:focus, select:focus {border-color:var(--mint);
 .voice-preview { display:block; width:100%; margin:0 0 20px; }
 .admin-delete { margin-top:20px; }
 .admin-fields input[type="file"] { max-width:100%; padding:12px; font-size:13px; }
+.voice-volume > span { display:flex; justify-content:space-between; }
+.voice-volume input { appearance:auto; -webkit-appearance:auto; padding:0; border:0; background:transparent; accent-color:var(--mint); }
 .dice-result { display:flex; align-items:center; justify-content:center; gap:16px; margin:10px 0 18px; color:var(--muted); font-size:12px; }
 .dice-result strong { font-size:15px; color:var(--text); }
 .dice-pair { display:flex; gap:24px; padding:14px 8px; }

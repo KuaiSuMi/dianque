@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
+import { useVoiceAudio } from './voice-audio';
 
 export function Dice({ dice }) {
   if (!dice) return null;
@@ -14,7 +15,7 @@ export function useRiichiVoice(room, me) {
   const [voices, setVoices] = useState([]);
   const [selected, setSelected] = useState(() => { try { return localStorage.getItem('riichi-voice') || ''; } catch { return ''; } });
   const [error, setError] = useState('');
-  const audio = useRef(null);
+  const audio = useVoiceAudio();
   const seen = useRef(new Set(room.events.map((event) => event.id)));
   const refresh = useCallback((signal) => {
     api('/riichi-voices', { signal }).then(setVoices).catch((e) => { if (!signal?.aborted) setError(e.message); });
@@ -25,17 +26,27 @@ export function useRiichiVoice(room, me) {
     reload();
     window.addEventListener('focus', reload);
     window.addEventListener('dianque:voices-changed', reload);
-    return () => { abort.abort(); audio.current?.pause(); window.removeEventListener('focus', reload); window.removeEventListener('dianque:voices-changed', reload); };
+    return () => { abort.abort(); audio.element.current?.pause(); window.removeEventListener('focus', reload); window.removeEventListener('dianque:voices-changed', reload); };
   }, [refresh]);
   const voice = voices.find((item) => item.id === selected);
-  function play(item) {
+  async function prepare() {
+    if (!voice) return;
+    try {
+      audio.element.current ||= new Audio();
+      await audio.resume(voice.volume);
+    } catch { setError('请在牌桌设置中点击试听，允许浏览器播放声音。'); }
+  }
+  async function play(item) {
     if (!item) return;
-    audio.current ||= new Audio();
-    audio.current.pause(); audio.current.src = item.url;
-    audio.current.play().then(() => setError('')).catch(() => setError('浏览器尚未允许声音，或音频无法播放。请在牌桌设置中点击试听。'));
+    try {
+      audio.element.current ||= new Audio();
+      audio.element.current.pause(); audio.element.current.src = item.url;
+      await Promise.all([audio.resume(item.volume), audio.element.current.play()]);
+      setError('');
+    } catch { audio.element.current?.pause(); setError('浏览器尚未允许声音，或音频无法播放。请在牌桌设置中点击试听。'); }
   }
   function choose(id) {
-    setSelected(id); setError(''); audio.current?.pause();
+    setSelected(id); setError(''); audio.element.current?.pause();
     try { localStorage.setItem('riichi-voice', id); } catch { /* 浏览器禁用存储时，本次选择仍然生效。 */ }
     play(voices.find((item) => item.id === id));
   }
@@ -44,7 +55,7 @@ export function useRiichiVoice(room, me) {
     room.events.forEach((event) => seen.current.add(event.id));
     if (fresh.some((event) => event.type === 'riichi' && event.seat === me.seat && !event.undone && Date.now() - Date.parse(event.at) < 10000)) play(voice);
   }, [room.events, me.seat]);
-  return { voices, selected: voice?.id || '', choose, play: () => play(voice), refresh, error };
+  return { voices, selected: voice?.id || '', choose, play: () => play(voice), prepare, refresh, error };
 }
 
 export function VoiceSettings({ voice }) {

@@ -10,6 +10,10 @@ const nameOf = (value) => {
   check(name.length > 0 && name.length <= 60 && !/[\x00-\x1f\x7f]/.test(name), '音频名称须为 1–60 字');
   return name;
 };
+const volumeOf = (value) => {
+  check(Number.isInteger(value) && value >= 0 && value <= 100, '音量须为 0–100 的整数');
+  return value;
+};
 
 function matchesFormat(data, format) {
   if (!Buffer.isBuffer(data) || data.length < 12) return false;
@@ -25,6 +29,10 @@ function matchesFormat(data, format) {
 }
 
 export function voiceRoutes(http, app, webRequest) {
+  function saveVolume(id, volume) {
+    if (volume === 100) app.rows('DELETE FROM riichi_voice_volumes WHERE voice_id=?', id);
+    else app.rows('INSERT INTO riichi_voice_volumes VALUES (?,?) ON CONFLICT(voice_id) DO UPDATE SET volume=excluded.volume', id, volume);
+  }
   function administrator(req) {
     const request = webRequest(req);
     if (req.method !== 'GET' && request.headers.get('Origin') !== new URL(request.url).origin) fail(403, '不允许跨站操作');
@@ -34,7 +42,7 @@ export function voiceRoutes(http, app, webRequest) {
     return user;
   }
   http.get('/api/riichi-voices', (_req, res) => {
-    res.set('Cache-Control', 'no-store').json(app.rows('SELECT id,name,length(audio) AS size FROM riichi_voices ORDER BY name,id').map((voice) => ({ ...voice, url: `/media/riichi/${voice.id}` })));
+    res.set('Cache-Control', 'no-store').json(app.rows('SELECT id,name,length(audio) AS size,COALESCE(volume,100) AS volume FROM riichi_voices LEFT JOIN riichi_voice_volumes ON voice_id=id ORDER BY name,id').map((voice) => ({ ...voice, url: `/media/riichi/${voice.id}` })));
   });
   http.get('/media/riichi/:id', (req, res) => {
     const voice = app.one('SELECT type,audio FROM riichi_voices WHERE id=?', req.params.id);
@@ -60,21 +68,30 @@ export function voiceRoutes(http, app, webRequest) {
     // 校验容器头；具体编码能否播放由浏览器决定。
     check(typeof req.query.format === 'string' && Object.hasOwn(formats, req.query.format) && matchesFormat(req.body, req.query.format), '请选择有效的 MP3、WAV、OGG、M4A 或 AAC 音频');
     const name = nameOf(req.query.name), id = randomUUID();
+    check(typeof req.query.volume === 'string' && req.query.volume.trim() !== '', '请设置音量');
+    const volume = volumeOf(Number(req.query.volume));
     app.transaction(() => {
       app.limit(`voice-upload:${user.id}`, 30, 3600000, '音频上传次数过多');
       app.rows('INSERT INTO riichi_voices VALUES (?,?,?,?)', id, name, formats[req.query.format], req.body);
+      saveVolume(id, volume);
     });
-    res.status(201).json({ id, name, size: req.body.length, url: `/media/riichi/${id}` });
+    res.status(201).json({ id, name, volume, size: req.body.length, url: `/media/riichi/${id}` });
   });
   http.post('/api/admin/riichi-voices/:id', express.json({ limit: '16kb' }), (req, res) => {
     administrator(req);
-    check(req.body && Object.keys(req.body).length === 1, '请填写音频名称');
-    const name = nameOf(req.body.name);
-    if (!app.one('UPDATE riichi_voices SET name=? WHERE id=? RETURNING id', name, req.params.id)) fail(404, '音频不存在或已被删除');
+    check(req.body && Object.keys(req.body).length === 2 && Object.keys(req.body).every((key) => ['name', 'volume'].includes(key)), '请填写音频名称和音量');
+    const name = nameOf(req.body.name), volume = volumeOf(req.body.volume);
+    app.transaction(() => {
+      if (!app.one('UPDATE riichi_voices SET name=? WHERE id=? RETURNING id', name, req.params.id)) fail(404, '音频不存在或已被删除');
+      saveVolume(req.params.id, volume);
+    });
     res.json({ ok: true });
   });
   http.delete('/api/admin/riichi-voices/:id', (req, res) => {
-    if (!app.one('DELETE FROM riichi_voices WHERE id=? RETURNING id', req.params.id)) fail(404, '音频不存在或已被删除');
+    app.transaction(() => {
+      if (!app.one('DELETE FROM riichi_voices WHERE id=? RETURNING id', req.params.id)) fail(404, '音频不存在或已被删除');
+      app.rows('DELETE FROM riichi_voice_volumes WHERE voice_id=?', req.params.id);
+    });
     res.json({ ok: true });
   });
 }

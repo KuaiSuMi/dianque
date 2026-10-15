@@ -192,23 +192,24 @@ function wave() {
   data.write('data', 36); data.writeUInt32LE(data.length - 44, 40);
   return data;
 }
-async function upload(mf, cookie, { data = wave(), name = '立直一', format = 'wav', requestOrigin = origin } = {}) {
-  const response = await fetch(`${mf.url}/api/admin/riichi-voices?${new URLSearchParams({ name, format })}`, { method: 'POST', headers: { Origin: requestOrigin, ...(cookie ? { Cookie: cookie } : {}) }, body: data });
+async function upload(mf, cookie, { data = wave(), name = '立直一', format = 'wav', volume = 100, requestOrigin = origin } = {}) {
+  const response = await fetch(`${mf.url}/api/admin/riichi-voices?${new URLSearchParams({ name, format, volume })}`, { method: 'POST', headers: { Origin: requestOrigin, ...(cookie ? { Cookie: cookie } : {}) }, body: data });
   return { status: response.status, body: await response.json(), headers: response.headers };
 }
 
-test('立直音频：管理员上传、稳定 ID 改名、播放范围、重启持久化和删除', async () => {
+test('立直音频：管理员上传、独立音量、稳定 ID 改名、播放范围、重启持久化和删除', async () => {
   const path = await mkdtemp(join(tmpdir(), 'dianque-voice-'));
   let mf = await runtime(path);
   try {
     assert.deepEqual((await request(mf, '/riichi-voices')).body, []);
     const { cookie } = await administrator(mf), member = await register(mf, '音频管理员');
     assert.equal((await request(mf, `/admin/users/${member.body.user.id}/role`, { cookie, body: { isAdmin: true } })).status, 200);
-    const first = await upload(mf, cookie), second = await upload(mf, member.cookie, { name: '立直二' });
+    const first = await upload(mf, cookie), second = await upload(mf, member.cookie, { name: '立直二', volume: 60 });
     assert.equal(first.status, 201); assert.equal(second.status, 201);
     const voices = (await request(mf, '/riichi-voices')).body;
-    assert.equal(voices.length, 2); assert.deepEqual(Object.keys(voices[0]).sort(), ['id', 'name', 'size', 'url']);
+    assert.equal(voices.length, 2); assert.deepEqual(Object.keys(voices[0]).sort(), ['id', 'name', 'size', 'url', 'volume']);
     const voice = first.body, route = `/admin/riichi-voices/${voice.id}`;
+    assert.equal(voice.volume, 100); assert.equal(second.body.volume, 60);
     const audio = await fetch(mf.url + voice.url);
     assert.equal(audio.headers.get('Content-Type'), 'audio/wav'); assert.equal(audio.headers.get('Cache-Control'), 'no-store');
     assert.equal(audio.headers.get('X-Content-Type-Options'), 'nosniff');
@@ -219,43 +220,54 @@ test('立直音频：管理员上传、稳定 ID 改名、播放范围、重启�
     const suffix = await fetch(mf.url + voice.url, { headers: { Range: 'bytes=-4' } });
     assert.equal(suffix.status, 206); assert.equal((await suffix.arrayBuffer()).byteLength, 4);
     assert.equal((await fetch(mf.url + voice.url, { headers: { Range: 'bytes=99999-' } })).status, 416);
-    assert.equal((await request(mf, route, { cookie: member.cookie, body: { name: '新名称' } })).status, 200);
+    assert.equal((await request(mf, route, { cookie: member.cookie, body: { name: '新名称', volume: 35 } })).status, 200);
     await mf.close(); mf = await runtime(path);
     const renamed = (await request(mf, '/riichi-voices')).body.find((item) => item.id === voice.id);
-    assert.deepEqual(renamed, { ...voice, name: '新名称' });
+    assert.deepEqual(renamed, { ...voice, name: '新名称', volume: 35 });
     assert.deepEqual(Buffer.from(await (await fetch(mf.url + voice.url)).arrayBuffer()), wave());
+    assert.equal((await request(mf, '/riichi-voices')).body.find((item) => item.id === second.body.id).volume, 60);
     mf.app.rows("CREATE TRIGGER prevent_voice_delete BEFORE DELETE ON riichi_voices BEGIN SELECT RAISE(ABORT, 'test delete failure'); END");
     assert.equal((await request(mf, route, { cookie, method: 'DELETE' })).status, 500);
     assert.equal((await fetch(mf.url + voice.url)).status, 200);
+    assert.equal(mf.app.one('SELECT volume FROM riichi_voice_volumes WHERE voice_id=?', voice.id).volume, 35);
     mf.app.rows('DROP TRIGGER prevent_voice_delete');
     assert.equal((await request(mf, route, { cookie: member.cookie, method: 'DELETE' })).status, 200);
     assert.equal((await fetch(mf.url + voice.url)).status, 404);
     assert.equal((await request(mf, '/riichi-voices')).body.length, 1);
-    assert.equal((await request(mf, route, { cookie, body: { name: '已删除' } })).status, 404);
+    assert.equal(mf.app.one('SELECT volume FROM riichi_voice_volumes WHERE voice_id=?', voice.id), undefined);
+    assert.equal((await request(mf, route, { cookie, body: { name: '已删除', volume: 100 } })).status, 404);
     assert.equal((await request(mf, route, { cookie, method: 'DELETE' })).status, 404);
     assert.equal((await request(mf, `/admin/users/${member.body.user.id}/role`, { cookie, body: { isAdmin: false } })).status, 200);
     assert.equal((await upload(mf, member.cookie)).status, 403);
   } finally { await mf.close(); await rm(path, { recursive: true, force: true }); }
 });
 
-test('立直音频：权限、来源、大小、格式、名称与频率边界', async () => {
+test('立直音频：权限、来源、大小、格式、名称、音量与频率边界', async () => {
   const mf = await runtime();
   try {
     const { cookie } = await administrator(mf), member = await register(mf, '普通听众');
     assert.equal((await upload(mf)).status, 401);
     assert.equal((await upload(mf, member.cookie)).status, 403);
     assert.equal((await upload(mf, cookie, { requestOrigin: 'https://evil.test' })).status, 403);
-    for (const options of [{ data: Buffer.alloc(0) }, { data: Buffer.from('<html>not audio</html>') }, { format: 'mp3' }, { format: 'html' }, { name: '' }, { name: 'x'.repeat(61) }, { name: '\u0000bad' }]) assert.equal((await upload(mf, cookie, options)).status, 400);
+    for (const options of [{ data: Buffer.alloc(0) }, { data: Buffer.from('<html>not audio</html>') }, { format: 'mp3' }, { format: 'html' }, { name: '' }, { name: 'x'.repeat(61) }, { name: '\u0000bad' }, { volume: -1 }, { volume: 101 }, { volume: 50.5 }, { volume: '' }, { volume: 'loud' }]) assert.equal((await upload(mf, cookie, options)).status, 400);
     assert.equal((await upload(mf, cookie, { data: Buffer.alloc(5 * 1024 * 1024 + 1) })).status, 413);
     assert.deepEqual((await request(mf, '/riichi-voices')).body, []);
     const voice = (await upload(mf, cookie, { name: '../仅为显示名称' })).body, route = `/admin/riichi-voices/${voice.id}`;
     for (const method of ['POST', 'DELETE']) {
-      const options = { method, ...(method === 'POST' ? { body: { name: '变更' } } : {}) };
+      const options = { method, ...(method === 'POST' ? { body: { name: '变更', volume: 20 } } : {}) };
       assert.equal((await request(mf, route, options)).status, 401);
       assert.equal((await request(mf, route, { ...options, cookie: member.cookie })).status, 403);
       assert.equal((await request(mf, route, { ...options, cookie, headers: { Origin: 'https://evil.test' } })).status, 403);
     }
-    for (const body of [{}, { name: '' }, { name: 'x'.repeat(61) }, { name: 123 }, { name: 'ok', extra: true }]) assert.equal((await request(mf, route, { cookie, body })).status, 400);
+    for (const body of [{}, { name: '缺少音量' }, { name: '', volume: 100 }, { name: 'x'.repeat(61), volume: 100 }, { name: 123, volume: 100 }, { name: 'ok', volume: 100, extra: true }, ...[-1, 101, 0.5, '50', null, true].map((volume) => ({ name: 'ok', volume }))]) assert.equal((await request(mf, route, { cookie, body })).status, 400);
+    for (const volume of [0, 100]) {
+      assert.equal((await request(mf, route, { cookie, body: { name: voice.name, volume } })).status, 200);
+      assert.equal((await request(mf, '/riichi-voices')).body.find((item) => item.id === voice.id).volume, volume);
+    }
+    mf.app.rows("CREATE TRIGGER prevent_voice_volume BEFORE INSERT ON riichi_voice_volumes BEGIN SELECT RAISE(ABORT, 'test volume failure'); END");
+    assert.equal((await request(mf, route, { cookie, body: { name: '不应保存', volume: 40 } })).status, 500);
+    assert.equal(mf.app.one('SELECT name FROM riichi_voices WHERE id=?', voice.id).name, voice.name);
+    mf.app.rows('DROP TRIGGER prevent_voice_volume');
     assert.equal((await fetch(mf.url + voice.url)).status, 200);
     for (const [format, header] of [['mp3', 'ID3'], ['ogg', 'OggS'], ['m4a', '0000ftyp'], ['aac', Buffer.from([0xff, 0xf1])], ['mp3', Buffer.from([0xff, 0xfb])]]) {
       const data = Buffer.alloc(16); Buffer.from(header).copy(data);
