@@ -2,7 +2,9 @@
 
 日麻线下计分助手。每位玩家用自己的手机登录，同步查看点数、确认支付和保存对局记录。
 
-[在线使用](https://dianque.me) · [项目仓库](https://github.com/KuaiSuMi/dianque)
+**在线使用点雀：[dianque.me](https://dianque.me)**
+
+[项目仓库](https://github.com/KuaiSuMi/dianque)
 
 ## 怎么使用
 
