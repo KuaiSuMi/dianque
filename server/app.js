@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { randomInt, randomUUID } from 'node:crypto';
-import { applyAction, check, GameError, joinRoom, leaveRoom, newRoom, publicRoom, stateOf } from './game.js';
+import { applyAction, check, GameError, joinRoom, leaveRoom, newRoom, prepareNextMatch, publicRoom, stateOf } from './game.js';
 import { cookie, credentials, nicknameValue, passwordValue, newToken, passwordHash, sessionHash, SESSION_SECONDS, verifyPassword, digest } from './auth.js';
 
 const codePattern = /^[A-Z]{4}$/;
@@ -40,6 +40,8 @@ export class Dianque {
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = FULL;
       CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, nickname_key TEXT UNIQUE NOT NULL, nickname TEXT NOT NULL, salt TEXT NOT NULL, password_hash TEXT NOT NULL, active_room TEXT, last_room TEXT, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS admins (user_id TEXT PRIMARY KEY);
+      CREATE TABLE IF NOT EXISTS announcements (id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL, published INTEGER NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
       CREATE TABLE IF NOT EXISTS rooms (code TEXT PRIMARY KEY, payload TEXT NOT NULL);
@@ -75,11 +77,43 @@ export class Dianque {
     const hash = sessionHash(request);
     return hash ? this.one('SELECT users.*,sessions.hash AS session_hash,sessions.expires_at FROM sessions JOIN users ON users.id=sessions.user_id WHERE sessions.hash=? AND sessions.expires_at>?', hash, Date.now()) : null;
   }
-  isAdmin(user) { return user.id === this.adminId; }
-  publicUser(user) { return { id: user.id, nickname: user.nickname, isAdmin: this.isAdmin(user) }; }
+  isSuperAdmin(user) { return user.id === this.adminId; }
+  isAdmin(user) { return this.isSuperAdmin(user) || !!this.one('SELECT user_id FROM admins WHERE user_id=?', user.id); }
+  publicUser(user) { return { id: user.id, nickname: user.nickname, isAdmin: this.isAdmin(user), isSuperAdmin: this.isSuperAdmin(user) }; }
   session(user) { return { user: this.publicUser(user), activeRoom: user.active_room, lastRoom: user.last_room }; }
+  createUser(body) {
+    const { nickname, key, password } = credentials(body);
+    if (this.one('SELECT id FROM users WHERE nickname_key=?', key)) fail(409, '昵称已被使用');
+    const { salt, hash } = passwordHash(password), id = randomUUID();
+    this.rows('INSERT INTO users(id,nickname_key,nickname,salt,password_hash,created_at) VALUES (?,?,?,?,?,?)', id, key, nickname, salt, hash, new Date().toISOString());
+    return this.one('SELECT * FROM users WHERE id=?', id);
+  }
   admin(request, url, body, user) {
-    if (!this.isAdmin(user)) fail(403, '仅管理员可管理账号');
+    if (!this.isAdmin(user)) fail(403, '仅管理员可使用管理功能');
+    if (url.pathname.startsWith('/api/admin/announcements')) return this.announcements(request, url, body);
+    const matchRoute = url.pathname.match(/^\/api\/admin\/matches\/([a-f0-9-]{36})$/);
+    if (matchRoute && request.method === 'DELETE') {
+      const changed = this.transaction(() => {
+        const match = this.one('SELECT code FROM matches WHERE id=?', matchRoute[1]);
+        if (!match) fail(404, '对局记录不存在');
+        const room = this.room(match.code);
+        if (room.matchId === matchRoute[1]) {
+          check(stateOf(room).status === 'ended', '只能移除已经结束的对局记录');
+          prepareNextMatch(room); room.revision++;
+          this.save(room);
+        }
+        this.rows('DELETE FROM results WHERE match_id=?', matchRoute[1]);
+        this.rows('DELETE FROM matches WHERE id=?', matchRoute[1]);
+        return room;
+      });
+      this.broadcast(changed);
+      return json({ ok: true });
+    }
+    if (url.pathname === '/api/admin/users' && request.method === 'POST') {
+      check(Object.keys(body).length === 2 && Object.keys(body).every((key) => ['nickname', 'password'].includes(key)), '请填写昵称和密码');
+      const created = this.transaction(() => { this.limit(`admin:${user.id}`, 30, 3600000, '账号修改次数过多'); return this.createUser(body); });
+      return json({ user: this.publicUser(created) }, 201);
+    }
     if (url.pathname === '/api/admin/users' && request.method === 'GET') {
       const query = (url.searchParams.get('q') || '').normalize('NFKC').trim().toLowerCase();
       const offset = Number(url.searchParams.get('offset') || 0);
@@ -88,8 +122,47 @@ export class Dianque {
       const users = this.rows('SELECT id,nickname,created_at FROM users WHERE instr(nickname_key,?)>0 ORDER BY created_at DESC,id LIMIT 20 OFFSET ?', query, offset);
       return json({ total, users: users.map((row) => ({ ...this.publicUser(row), createdAt: row.created_at })) });
     }
-    const route = url.pathname.match(/^\/api\/admin\/users\/([a-f0-9-]{36})$/);
-    if (!route || request.method !== 'POST') fail(404, '接口不存在');
+    const route = url.pathname.match(/^\/api\/admin\/users\/([a-f0-9-]{36})(?:\/(role|matches))?$/);
+    if (!route) fail(404, '接口不存在');
+    const target = this.one('SELECT * FROM users WHERE id=?', route[1]);
+    if (!target) fail(404, '账号不存在');
+    if (route[2] === 'matches' && request.method === 'GET') {
+      const offset = Number(url.searchParams.get('offset') || 0);
+      check(Number.isSafeInteger(offset) && offset >= 0, '页码无效');
+      const matches = this.rows('SELECT matches.id,code,ended_at AS endedAt,player_count AS playerCount,rank,score,payload FROM matches JOIN results ON results.match_id=matches.id WHERE user_id=? ORDER BY ended_at DESC,matches.id DESC LIMIT 20 OFFSET ?', target.id, offset);
+      return json({ total: this.one('SELECT COUNT(*) AS n FROM results WHERE user_id=?', target.id).n, matches: matches.map(({ payload, ...match }) => ({ ...match, players: JSON.parse(payload).players })) });
+    }
+    if (route[2] === 'role' && request.method === 'POST') {
+      if (!this.isSuperAdmin(user)) fail(403, '只有超级管理员可以任免管理员');
+      check(!this.isSuperAdmin(target), '不能修改超级管理员的权限');
+      check(Object.keys(body).length === 1 && typeof body.isAdmin === 'boolean', '管理员权限无效');
+      if (body.isAdmin) this.rows('INSERT OR IGNORE INTO admins VALUES (?)', target.id);
+      else this.rows('DELETE FROM admins WHERE user_id=?', target.id);
+      return json({ user: this.publicUser(target) });
+    }
+    if (route[2]) fail(404, '接口不存在');
+    if (!this.isSuperAdmin(user) && this.isAdmin(target) && target.id !== user.id) fail(403, '只有超级管理员可以修改其他管理员');
+    if (request.method === 'DELETE') {
+      check(target.id !== user.id && !this.isSuperAdmin(target), '不能删除自己或超级管理员');
+      const rooms = this.transaction(() => {
+        const rooms = this.rows('SELECT rooms.payload FROM rooms JOIN members ON rooms.code=members.code WHERE members.user_id=?', target.id).map(({ payload }) => JSON.parse(payload));
+        check(!target.active_room && !rooms.some((room) => active(room)), '该账号正在对局，请结束对局后再删除');
+        for (const room of rooms) {
+          if (room.players.some((p) => p.id === target.id)) { leaveRoom(room, target.id); this.save(room); }
+        }
+        this.rows('DELETE FROM sessions WHERE user_id=?', target.id);
+        this.rows('DELETE FROM admins WHERE user_id=?', target.id);
+        this.rows('DELETE FROM members WHERE user_id=?', target.id);
+        this.rows('DELETE FROM results WHERE user_id=?', target.id);
+        this.rows('DELETE FROM limits WHERE key IN (?,?,?,?)', `login:${target.nickname_key}`, `password:${target.id}`, `request:${target.id}`, `admin:${target.id}`);
+        this.rows('DELETE FROM users WHERE id=?', target.id);
+        return rooms;
+      });
+      for (const ws of this.sockets(target.id)) ws.close(4001, '账号已删除');
+      rooms.forEach((room) => this.broadcast(room));
+      return json({ ok: true });
+    }
+    if (request.method !== 'POST') fail(404, '接口不存在');
     const fields = Object.keys(body);
     check(fields.length > 0 && fields.every((key) => ['nickname', 'password'].includes(key)), '仅支持修改昵称或密码');
     const renamed = 'nickname' in body ? nicknameValue(body.nickname) : null;
@@ -123,6 +196,23 @@ export class Dianque {
     rooms.forEach((room) => this.broadcast(room));
     const signedOut = !!password && updated.id === user.id;
     return json({ user: updated, signedOut }, 200, signedOut ? { 'Set-Cookie': cookie('', request, 0) } : {});
+  }
+  announcements(request, url, body) {
+    if (url.pathname === '/api/admin/announcements' && request.method === 'GET') return json(this.rows('SELECT * FROM announcements ORDER BY updated_at DESC,id DESC LIMIT 100'));
+    const route = url.pathname.match(/^\/api\/admin\/announcements(?:\/([a-f0-9-]{36}))?$/);
+    if (!route || request.method !== 'POST') fail(404, '接口不存在');
+    check(Object.keys(body).every((key) => ['title', 'content', 'published', 'revision'].includes(key)), '公告字段无效');
+    check(typeof body.title === 'string' && body.title.trim().length > 0 && body.title.length <= 80, '公告标题须为 1～80 字');
+    check(typeof body.content === 'string' && body.content.trim().length > 0 && body.content.length <= 3000, '公告正文须为 1～3000 字');
+    check(typeof body.published === 'boolean', '请选择公告发布状态');
+    const id = route[1] || randomUUID();
+    this.transaction(() => {
+      const previous = this.one('SELECT revision FROM announcements WHERE id=?', id);
+      if (route[1] && !previous) fail(404, '公告不存在');
+      check(!previous || body.revision === previous.revision, '公告已被修改，请重新打开');
+      this.rows('INSERT INTO announcements VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,content=excluded.content,published=excluded.published,revision=excluded.revision,updated_at=excluded.updated_at', id, body.title.trim(), body.content.trim(), Number(body.published), (previous?.revision || 0) + 1, new Date().toISOString());
+    });
+    return json(this.one('SELECT * FROM announcements WHERE id=?', id), route[1] ? 200 : 201);
   }
   room(code, user) {
     check(codePattern.test(code), '房间码为 4 位大写字母');
@@ -181,6 +271,7 @@ export class Dianque {
         if (request.headers.get('Origin') !== url.origin) fail(403, '不允许跨站操作');
       }
       if (path === '/api/health') return json({ ok: true });
+      if (path === '/api/announcements' && method === 'GET') return json(this.rows('SELECT id,title,content,revision,updated_at FROM announcements WHERE published=1 ORDER BY updated_at DESC,id DESC LIMIT 100'));
       const body = method === 'POST' && request.body ? await bodyOf(request) : {};
       if (method === 'POST' && ['/api/register', '/api/login'].includes(path)) {
         this.limit(`auth:${ip}`, 30, 15 * 60000, '登录或注册请求过多');
@@ -191,9 +282,7 @@ export class Dianque {
           if (path === '/api/register') {
             if (user) fail(409, '昵称已被使用');
             this.limit(`registered:${ip}`, 8, 3600000, '注册账号过多');
-            const { salt, hash } = passwordHash(password);
-            this.rows('INSERT INTO users(id,nickname_key,nickname,salt,password_hash,created_at) VALUES (?,?,?,?,?,?)', randomUUID(), key, nickname, salt, hash, new Date().toISOString());
-            user = this.one('SELECT * FROM users WHERE nickname_key=?', key);
+            user = this.createUser({ nickname, password });
           } else {
             this.limit(`login:${key}`, 10, 15 * 60000, '登录尝试过多');
             // 密码错误仍须提交失败计数，不能抛出异常触发回滚。
@@ -241,7 +330,7 @@ export class Dianque {
         this.limit(`create:${user.id}`, 10, 3600000);
         let code;
         do { code = Array.from({ length: 4 }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[randomInt(26)]).join(''); } while (this.one('SELECT code FROM rooms WHERE code=?', code));
-        const room = newRoom(code, { id: user.id, name: user.nickname, seat: 0 }, { startPoints: body.startPoints ?? 25000, startDealer: 0, length: body.length ?? 'south' }, body.playerCount ?? 4);
+        const room = newRoom(code, { id: user.id, name: user.nickname, seat: 0 }, { startPoints: body.startPoints ?? 25000, startDealer: 0, length: body.length ?? 'south', tsumoConfirm: body.tsumoConfirm ?? false, autoDice: body.autoDice ?? false }, body.playerCount ?? 4);
         this.transaction(() => {
           this.save(room);
           this.rows('INSERT INTO members VALUES (?,?,?)', user.id, code, new Date().toISOString());

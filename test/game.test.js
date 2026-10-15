@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { applyAction, newRoom, joinRoom, leaveRoom, stateOf, dealerOf, publicRoom } from '../server/game.js';
 
 let seq = 0;
-function room(count = 4) {
-  const r = newRoom('ABCD', { id: 'p0', name: '东家', seat: 0, tokenHash: 'private' }, { startPoints: 25000, startDealer: 0, length: 'south' }, count);
+function room(count = 4, config = {}) {
+  const r = newRoom('ABCD', { id: 'p0', name: '东家', seat: 0, tokenHash: 'private' }, { startPoints: 25000, startDealer: 0, length: 'south', ...config }, count);
   for (let i = 1; i < count; i++) joinRoom(r, { id: `p${i}`, name: `玩家${i}`, tokenHash: 'private' });
   act(r, 0, { type: 'start' });
   return r;
@@ -16,6 +16,63 @@ function receive(r, seat) { act(r, seat, { type: 'receive', pendingId: r.pending
 function ron(r, from, to, amount) { act(r, from, { type: 'propose', mode: 'ron', transfers: [{ from, to, amount }] }); receive(r, to); }
 function conserved(r) { assert.equal(stateOf(r).scores.reduce((a, b) => a + b) + stateOf(r).pot * 1000, 100000); }
 function finish(r) { act(r, 0, { type: 'end' }); act(r, 0, { type: 'confirm-end' }); }
+
+for (const count of [3, 4]) test(`${count} 人默认自摸仅赢家确认，其他人不能付款确认或取消，重复收款不重复结算`, () => {
+  const r = room(count);
+  assert.equal(r.config.tsumoConfirm, false); assert.equal(r.config.autoDice, false);
+  const transfers = r.players.filter((p) => p.seat !== 1).map((p) => ({ from: p.seat, to: 1, amount: 1000 }));
+  act(r, 0, { type: 'propose', mode: 'tsumo', transfers });
+  assert.throws(() => act(r, 0, { type: 'approve', pendingId: r.pending.id }), /自摸家/);
+  assert.throws(() => act(r, 0, { type: 'cancel', pendingId: r.pending.id }), /确认方/);
+  assert.throws(() => receive(r, 0), /收款方/);
+  assert.deepEqual(stateOf(r).scores, Array(count).fill(25000));
+  const confirmation = { type: 'receive', pendingId: r.pending.id, requestId: 'tsumo-confirm-once', roundId: stateOf(r).roundId };
+  act(r, 1, confirmation);
+  assert.equal(r.pending, null); assert.equal(stateOf(r).hand, 1);
+  assert.equal(stateOf(r).scores[1], 25000 + (count - 1) * 1000);
+  assert.equal(act(r, 1, confirmation), false); assert.equal(stateOf(r).hand, 1);
+  act(r, 0, { type: 'undo' }); assert.deepEqual(stateOf(r).scores, Array(count).fill(25000));
+  act(r, 0, { type: 'redo' }); assert.equal(stateOf(r).hand, 1);
+});
+
+test('大厅移动和交换座位：填补空位、版本校验、座次记分、保留上一场记录', () => {
+  const r = newRoom('SEAT', { id: 'p0', name: '甲', seat: 0 }, { startPoints: 25000, startDealer: 0, length: 'south' });
+  act(r, 0, { type: 'seat', seat: 3 });
+  joinRoom(r, { id: 'p1', name: '乙' }); assert.equal(r.players[0].id, 'p1');
+  const stale = r.revision;
+  act(r, 1, { type: 'seat', seat: 3 });
+  assert.deepEqual(r.players.map((p) => [p.id, p.seat]), [['p0', 0], ['p1', 3]]);
+  assert.throws(() => act(r, 0, { type: 'seat', seat: 1, revision: stale }), /更新/);
+  for (const seat of [-1, 4, 1.5, '1', 0]) assert.throws(() => act(r, 0, { type: 'seat', seat }), /座位/);
+  act(r, 0, { type: 'configure', startPoints: 25000, length: 'south', playerCount: 3, autoDice: true, tsumoConfirm: true });
+  assert.deepEqual(r.players.map((p) => p.seat), [0, 1]);
+  assert.equal(r.config.tsumoConfirm, true);
+  joinRoom(r, { id: 'p2', name: '丙' }); act(r, 0, { type: 'start' });
+  assert.throws(() => act(r, 0, { type: 'seat', seat: 1 }), /大厅/);
+  act(r, 1, { type: 'riichi' }); assert.equal(stateOf(r).scores[1], 24000);
+  finish(r); const ended = structuredClone(publicRoom(r));
+  act(r, 1, { type: 'seat', seat: 0 });
+  assert.deepEqual(r.matches[0].state, ended.state);
+  assert.deepEqual(r.matches[0].players, ended.players.map(({ id, name, seat }) => ({ id, name, seat })));
+  act(r, 0, { type: 'start' }); act(r, 1, { type: 'riichi' });
+  assert.equal(stateOf(r).scores[0], 24000);
+});
+
+test('骰子默认关闭，开启后开局、和牌和流局自动投掷，其他操作和重放保留结果', () => {
+  assert.equal(stateOf(room()).dice, undefined);
+  const r = room(4, { autoDice: true });
+  const first = structuredClone(stateOf(r).dice);
+  assert.equal(first.values.length, 2); assert.ok(first.values.every((n) => Number.isInteger(n) && n >= 1 && n <= 6));
+  act(r, 0, { type: 'riichi' }); assert.deepEqual(stateOf(r).dice, first);
+  ron(r, 1, 0, 1000); const second = structuredClone(stateOf(r).dice);
+  assert.notEqual(second.id, first.id); assert.equal(stateOf(r).honba, 1);
+  act(r, 0, { type: 'undo' }); assert.deepEqual(stateOf(r).dice, first);
+  act(r, 0, { type: 'redo' }); assert.deepEqual(stateOf(r).dice, second);
+  for (let i = 0; i < 4; i++) act(r, i, { type: 'draw', tenpai: false });
+  assert.notEqual(stateOf(r).dice.id, second.id);
+  assert.deepEqual(publicRoom(r).state.dice, stateOf(r).dice);
+  for (const invalid of [{ autoDice: 'true' }, { tsumoConfirm: 1 }]) assert.throws(() => room(4, invalid), /布尔/);
+});
 
 for (const count of [3, 4]) test(`${count} 人结算先预览供托，房主确认后给第一名且不可撤销`, () => {
   const r = room(count);
@@ -128,8 +185,8 @@ test('三人局顺序为东一、东二、东三、南一，庄家和风位不�
   assert.equal(publicRoom(r).label, '南 1 局'); assert.equal(dealerOf(r), 0);
 });
 
-test('三人自摸需要两家确认，不允许缺少付款方或使用北家座位', () => {
-  const r = room(3);
+test('开启确认的三人自摸需要两家确认，不允许缺少付款方或使用北家座位', () => {
+  const r = room(3, { tsumoConfirm: true });
   const transfers = [{ from: 0, to: 1, amount: 2000 }, { from: 2, to: 1, amount: 1000 }];
   assert.throws(() => act(r, 1, { type: 'propose', mode: 'tsumo', transfers: transfers.slice(0, 1) }), /两家/);
   assert.throws(() => act(r, 1, { type: 'propose', mode: 'tsumo', transfers: [transfers[0], { from: 3, to: 1, amount: 1000 }] }), /座位/);
@@ -224,8 +281,8 @@ test('庄家和牌连庄，支付值已含本场，供托另外交付', () => {
   ron(r, 2, 3, 2300); assert.equal(stateOf(r).hand, 1); assert.equal(stateOf(r).honba, 0);
   assert.equal(stateOf(r).scores[3], 27300); assert.equal(stateOf(r).pot, 0); conserved(r);
 });
-test('自摸先等三家付款，再由赢家确认，最终只换一次局', () => {
-  const r = room();
+test('开启确认的自摸先等三家付款，再由赢家确认，最终只换一次局', () => {
+  const r = room(4, { tsumoConfirm: true });
   act(r, 1, { type: 'propose', mode: 'tsumo', transfers: [{ from: 0, to: 1, amount: 2000 }, { from: 2, to: 1, amount: 1000 }, { from: 3, to: 1, amount: 1000 }] });
   assert.throws(() => receive(r, 1), /等待所有付款方/);
   for (const seat of [0, 2, 3]) act(r, seat, { type: 'approve', pendingId: r.pending.id });
@@ -268,7 +325,7 @@ test('未完成结算时不许撤销、立直、开始另一笔结算', () => {
   assert.throws(() => act(r, 2, { type: 'undo' }), /取消/);
   assert.throws(() => act(r, 2, { type: 'riichi' }), /当前结算/);
   assert.throws(() => act(r, 2, { type: 'draw', tenpai: false }), /支付/);
-  assert.throws(() => act(r, 2, { type: 'cancel', pendingId: r.pending.id }), /相关玩家/);
+  assert.throws(() => act(r, 2, { type: 'cancel', pendingId: r.pending.id }), /确认方/);
   act(r, 1, { type: 'cancel', pendingId: r.pending.id }); assert.equal(r.pending, null);
 });
 test('拒绝错误金额、伪造付款方、重复收款人、不完整自摸', () => {
@@ -298,10 +355,10 @@ test('大厅退出释放座位、按座位顺序转交房主，空房间可重�
   for (let i = 1; i < 4; i++) joinRoom(r, { id: `p${i}`, name: `玩家${i}` });
   leaveRoom(r, 'p1');
   assert.equal(r.hostId, 'p0');
-  assert.deepEqual(r.players.map((p) => [p.id, p.seat]), [['p0', 0], ['p2', 1], ['p3', 2]]);
-  assert.equal(r.config.startDealer, 1);
+  assert.deepEqual(r.players.map((p) => [p.id, p.seat]), [['p0', 0], ['p2', 2], ['p3', 3]]);
+  assert.equal(r.config.startDealer, 2);
   leaveRoom(r, 'p0');
-  assert.equal(r.hostId, 'p2'); assert.equal(r.config.startDealer, 0);
+  assert.equal(r.hostId, 'p2'); assert.equal(r.config.startDealer, 2);
   assert.throws(() => act(r, 0, { type: 'configure', startPoints: 35000, playerCount: 3, length: 'east' }), /不在/);
   act(r, 2, { type: 'configure', startPoints: 35000, playerCount: 3, length: 'east' });
   leaveRoom(r, 'p2'); leaveRoom(r, 'p3');
@@ -326,7 +383,7 @@ test('对局和结算期间不能退出，确认后退出保留完整成绩并�
   assert.deepEqual(r.matches[0].events, ended.events);
   assert.equal(publicRoom(r).canUndo, false);
   joinRoom(r, { id: 'p4', name: '新玩家' });
-  assert.equal(r.players[3].id, 'p4');
+  assert.equal(r.players[0].id, 'p4');
   act(r, 1, { type: 'start' });
   assert.deepEqual(stateOf(r).scores, [25000, 25000, 25000, 25000]);
   assert.throws(() => act(r, 1, { type: 'undo' }), /没有可撤销/);

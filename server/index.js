@@ -1,6 +1,7 @@
 import express from 'express';
 import { createServer, STATUS_CODES } from 'node:http';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, extname } from 'node:path';
+import { readdirSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { Dianque } from './app.js';
@@ -30,6 +31,22 @@ export async function createApp({ database = resolve(root, 'data/dianque.sqlite'
       ...(!['GET', 'HEAD'].includes(req.method) && req.body?.length ? { body: req.body } : {})
     });
   }
+  const voicesDirectory = resolve(dirname(database), 'riichi');
+  const audioFile = (name) => ['.mp3', '.wav', '.ogg', '.m4a', '.aac'].includes(extname(name).toLowerCase());
+  http.get('/api/riichi-voices', (_req, res, next) => {
+    try {
+      const files = readdirSync(voicesDirectory, { withFileTypes: true }).filter((entry) => entry.isFile() && audioFile(entry.name));
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(files.sort((a, b) => a.name.localeCompare(b.name)).map(({ name }) => ({ id: name, name: name.slice(0, -extname(name).length), url: `/media/riichi/${encodeURIComponent(name)}` })));
+    } catch (error) { if (error.code === 'ENOENT') res.json([]); else next(error); }
+  });
+  http.use('/media/riichi', (req, res, next) => {
+    if (!audioFile(req.path)) return res.sendStatus(404);
+    next();
+  }, express.static(voicesDirectory, { dotfiles: 'deny', fallthrough: false }), (error, _req, res, next) => {
+    if (error.status === 404) return res.sendStatus(404);
+    next(error);
+  });
   http.use('/api', express.raw({ type: () => true, limit: '16kb' }), async (req, res) => {
     const response = await app.fetch(webRequest(req), { ip: req.ip });
     res.status(response.status);

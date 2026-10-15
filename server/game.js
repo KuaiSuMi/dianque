@@ -19,10 +19,11 @@ function initialState(config, count) {
   return { status: 'waiting', hand: 0, roundId: randomUUID(), honba: 0, pot: 0, scores: Array(count).fill(config.startPoints), riichi: Array(count).fill(false) };
 }
 
-function checkConfig({ startPoints, length }, count) {
+function checkConfig({ startPoints, length, tsumoConfirm = false, autoDice = false }, count) {
   check([3, 4].includes(count), '请选择三人或四人对局');
   check(Number.isSafeInteger(startPoints) && startPoints >= 1000 && startPoints <= 1000000 && startPoints % 100 === 0, '起始点数须为 1000～1000000 之间的整百数');
   check(['east', 'south'].includes(length), '请选择东风场或南风场');
+  check(typeof tsumoConfirm === 'boolean' && typeof autoDice === 'boolean', '房间开关须为布尔值');
 }
 
 function checkScores(scores, count) {
@@ -37,6 +38,7 @@ function finalResult(state) {
 }
 
 export function newRoom(code, player, config, count = 4) {
+  config = { tsumoConfirm: false, autoDice: false, ...config };
   checkConfig(config, count);
   check(Number.isInteger(config.startDealer) && config.startDealer >= 0 && config.startDealer < count, '起庄位置无效');
   const state = initialState(config, count);
@@ -47,8 +49,9 @@ export function joinRoom(room, player) {
   check(['waiting', 'ended'].includes(stateOf(room).status), '牌局已经开始，只有已入座账号可重连');
   check(room.players.length < stateOf(room).scores.length, '房间已满');
   prepareNextMatch(room);
-  player.seat = room.players.length;
+  player.seat = Array.from({ length: stateOf(room).scores.length }, (_, seat) => seat).find((seat) => !room.players.some((p) => p.seat === seat));
   room.players.push(player);
+  room.players.sort((a, b) => a.seat - b.seat);
   if (!room.hostId) room.hostId = player.id;
   room.revision++;
 }
@@ -58,15 +61,15 @@ export function leaveRoom(room, actorId) {
   const index = room.players.findIndex((p) => p.id === actorId);
   check(index >= 0, '你不在这个房间');
   prepareNextMatch(room);
-  const dealerId = room.players[room.config.startDealer]?.id;
   room.players.splice(index, 1);
-  room.players.forEach((p, seat) => { p.seat = seat; });
-  room.config.startDealer = Math.max(0, room.players.findIndex((p) => p.id === dealerId));
   if (room.hostId === actorId) room.hostId = room.players[0]?.id ?? null;
   room.revision++;
 }
 
 function commit(room, state, entry) {
+  if (room.config.autoDice && (entry.type === 'start' || entry.type === 'win' || entry.type === 'draw')) {
+    state.dice = { id: randomUUID(), values: [randomInt(1, 7), randomInt(1, 7)] };
+  }
   room.history = room.history.slice(0, room.cursor + 1);
   room.history.push({ state, entry: { id: randomUUID(), at: new Date().toISOString(), ...entry } });
   room.cursor++;
@@ -74,7 +77,7 @@ function commit(room, state, entry) {
   room.drawVotes = {};
 }
 
-function prepareNextMatch(room) {
+export function prepareNextMatch(room) {
   if (stateOf(room).status !== 'ended') return;
   const { state, players, events, config } = publicRoom(room);
   const match = { id: room.matchId, code: room.code, endedAt: room.history[room.cursor].entry.at, state, players: players.map(({ id, name, seat }) => ({ id, name, seat })), events, config };
@@ -134,7 +137,11 @@ export function applyAction(room, actorId, action) {
     checkConfig(action, action.playerCount);
     check(room.players.length <= action.playerCount, '已有四人入座，不能改为三人模式');
     prepareNextMatch(room);
-    room.config = { startPoints: action.startPoints, length: action.length, startDealer: room.config.startDealer % action.playerCount };
+    room.config = { startPoints: action.startPoints, length: action.length, startDealer: room.config.startDealer % action.playerCount, tsumoConfirm: action.tsumoConfirm ?? false, autoDice: action.autoDice ?? false };
+    for (const p of room.players.filter((p) => p.seat >= action.playerCount)) {
+      p.seat = Array.from({ length: action.playerCount }, (_, seat) => seat).find((seat) => !room.players.some((other) => other.seat === seat));
+    }
+    room.players.sort((a, b) => a.seat - b.seat);
     room.history = [{ state: initialState(room.config, action.playerCount), entry: null }];
     room.cursor = 0;
   } else if (action.type === 'start') {
@@ -144,6 +151,14 @@ export function applyAction(room, actorId, action) {
     state = clone(stateOf(room));
     state.status = 'playing';
     commit(room, state, { type: 'start', label: '对局开始' });
+  } else if (action.type === 'seat') {
+    check(['waiting', 'ended'].includes(state.status), '只能在房间大厅换座');
+    check(Number.isInteger(action.seat) && action.seat >= 0 && action.seat < count && action.seat !== seat, '请选择其他座位');
+    prepareNextMatch(room);
+    const other = room.players.find((p) => p.seat === action.seat);
+    if (other) other.seat = seat;
+    player.seat = action.seat;
+    room.players.sort((a, b) => a.seat - b.seat);
   } else if (action.type === 'shuffle') {
     check(player.id === room.hostId, '只有房主可以随机选座');
     check(['waiting', 'ended'].includes(state.status), '只能在房间大厅随机选座');
@@ -220,15 +235,17 @@ export function applyAction(room, actorId, action) {
     } else if (action.type === 'approve' || action.type === 'receive' || action.type === 'cancel') {
       const pending = room.pending;
       check(pending && pending.id === action.pendingId, '这笔结算已完成或已取消');
+      const needsApproval = pending.mode !== 'tsumo' || room.config.tsumoConfirm;
       if (action.type === 'cancel') {
-        check(pending.payers.includes(seat) || pending.winners.includes(seat), '只有相关玩家可以取消这笔结算');
+        check((needsApproval && pending.payers.includes(seat)) || pending.winners.includes(seat), '只有确认方可以取消这笔结算');
         room.pending = null;
       } else if (action.type === 'approve') {
+        check(needsApproval, '本房间自摸仅由自摸家确认');
         check(pending.payers.includes(seat), '只有付款方可以确认付款');
         check(!pending.approved.includes(seat), '你已确认付款');
         pending.approved.push(seat);
       } else {
-        check(pending.approved.length === pending.payers.length, '请等待所有付款方确认');
+        check(!needsApproval || pending.approved.length === pending.payers.length, '请等待所有付款方确认');
         check(pending.winners.includes(seat), '只有收款方可以确认收款');
         check(!pending.received.includes(seat), '你已确认收款');
         pending.received.push(seat);

@@ -54,7 +54,15 @@ curl -fsS https://dianque.me/api/health
 sqlite3 /var/lib/dianque/dianque.sqlite 'SELECT id,nickname FROM users;'
 ```
 
-将目标 ID 填入 `/etc/dianque.env` 的 `ADMIN_USER_ID`，执行 `systemctl restart dianque`。管理员权限不取决于昵称，不要将真实 ID 或凭据写入仓库。
+将目标 ID 填入 `/etc/dianque.env` 的 `ADMIN_USER_ID`，执行 `systemctl restart dianque`。该账号为超级管理员，可在管理中心任免普通管理员；普通管理员权限保存在服务器数据库的 `admins` 表中。权限不取决于昵称，不要将真实 ID、昵称名单或凭据写入仓库。
+
+管理员可创建账号、修改昵称和密码、删除非在局账号、移除整场战绩，并发布或编辑首页公告。普通管理员不能修改其他管理员；超级管理员和当前登录账号不可删除。删除战绩会移除同场所有玩家的记录与统计；删除账号则保留其他玩家的历史记录。密码重置和账号删除立即撤销该账号全部会话。
+
+## 立直语音
+
+音频存放在数据库同目录下的 `riichi/`，生产路径为 `/var/lib/dianque/riichi/`，不随代码发布覆盖。将 MP3、WAV、OGG、M4A 或 AAC 文件放入该目录，保证应用用户 `dianque` 可读；文件名（去掉扩展名）就是选项名称。音频尚未提供时列表为空，不放占位语音。
+
+玩家在牌桌设置选择本设备播放的语音并试听，之后新立直会自动播放。重连时不重播较早的记录；手机浏览器可能要求先点击试听才允许播放。音频文件需与数据库一起单独备份。
 
 ## 更新与排查
 

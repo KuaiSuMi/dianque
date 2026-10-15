@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -45,6 +45,127 @@ function message(ws, predicate) {
     ws.addEventListener('message', receive);
   });
 }
+
+test('管理权限：任免持久化，普通管理员创建账号，禁止越权修改管理员，删除后撤销会话与座位', async () => {
+  const path = await mkdtemp(join(tmpdir(), 'dianque-admin-'));
+  let mf = await runtime(path), ws;
+  try {
+    const { cookie } = await administrator(mf);
+    const member = await register(mf, '受委任者');
+    const id = member.body.user.id, route = `/admin/users/${id}`;
+    assert.equal((await request(mf, `${route}/role`, { cookie: member.cookie, body: { isAdmin: true } })).status, 403);
+    assert.equal((await request(mf, `${route}/role`, { cookie, body: { isAdmin: 'yes' } })).status, 400);
+    assert.equal((await request(mf, `${route}/role`, { cookie, body: { isAdmin: true } })).body.user.isAdmin, true);
+    assert.equal((await request(mf, '/session', { cookie })).body.user.isSuperAdmin, true);
+    await mf.close(); mf = await runtime(path);
+    assert.equal((await request(mf, '/session', { cookie: member.cookie })).body.user.isAdmin, true);
+    for (const [path, options] of [
+      [`/admin/users/${adminId}`, { body: { password: 'tampered-password' } }],
+      [`/admin/users/${adminId}`, { method: 'DELETE' }],
+      [`${route}/role`, { body: { isAdmin: false } }],
+    ]) assert.equal((await request(mf, path, { cookie: member.cookie, ...options })).status, 403);
+    assert.equal((await request(mf, `/admin/users/${adminId}`, { cookie, method: 'DELETE' })).status, 400);
+    assert.equal((await request(mf, '/admin/users', { cookie: member.cookie, body: { nickname: '新建用户', password: 'short' } })).status, 400);
+    const created = await request(mf, '/admin/users', { cookie: member.cookie, body: { nickname: '新建用户', password } });
+    assert.equal(created.status, 201); assert.equal(created.body.user.isAdmin, false); assert.equal(created.cookie, undefined);
+    const newId = created.body.user.id;
+    const login = await request(mf, '/login', { body: { nickname: '新建用户', password } }); assert.equal(login.status, 200);
+    assert.equal((await request(mf, '/admin/users', { cookie: member.cookie, body: { nickname: '新建用户', password } })).status, 409);
+    const room = (await request(mf, '/rooms', { cookie: login.cookie, body: {} })).body;
+    ws = await socket(mf, room.code, login.cookie);
+    const closed = new Promise((resolve) => ws.once('close', (code) => resolve(code)));
+    assert.equal((await request(mf, `/admin/users/${newId}`, { cookie: member.cookie, method: 'DELETE', headers: { Origin: 'https://evil.test' } })).status, 403);
+    assert.equal((await request(mf, `/admin/users/${newId}`, { cookie: member.cookie, method: 'DELETE' })).status, 200);
+    assert.equal(await closed, 4001);
+    assert.equal((await request(mf, '/session', { cookie: login.cookie })).body.user, null);
+    assert.equal(mf.app.room(room.code).players.length, 0);
+    assert.equal(mf.app.one('SELECT * FROM users WHERE id=?', newId), undefined);
+    assert.equal((await request(mf, `${route}/role`, { cookie, body: { isAdmin: false } })).status, 200);
+    assert.equal((await request(mf, '/admin/users', { cookie: member.cookie })).status, 403);
+  } finally { ws?.close(); await mf.close(); await rm(path, { recursive: true, force: true }); }
+});
+
+test('整场战绩删除：在局账号保护、全员统计清除、旧场与当前结束场不复活、删除事务回滚', async () => {
+  const mf = await runtime();
+  try {
+    const { cookie, db } = await administrator(mf);
+    const players = [];
+    for (const name of ['记录甲', '记录乙', '记录丙']) players.push(await register(mf, name));
+    let room = (await request(mf, '/rooms', { cookie: players[0].cookie, body: { playerCount: 3, autoDice: true } })).body;
+    for (const p of players.slice(1)) room = (await request(mf, `/rooms/${room.code}/join`, { cookie: p.cookie, method: 'POST' })).body;
+    const action = async (data) => {
+      const response = await request(mf, `/rooms/${room.code}/action`, { cookie: players[0].cookie, body: { requestId: randomUUID(), revision: room.revision, ...data } });
+      assert.equal(response.status, 200, JSON.stringify(response.body)); room = response.body;
+    };
+    await action({ type: 'seat', seat: 2 });
+    assert.equal(room.players[2].id, players[0].body.user.id);
+    await action({ type: 'start' }); assert.equal(room.state.dice.values.length, 2);
+    assert.equal((await request(mf, `/admin/users/${players[1].body.user.id}`, { cookie, method: 'DELETE' })).status, 400);
+    await action({ type: 'end' }); await action({ type: 'confirm-end' }); const firstId = room.matchId;
+    await action({ type: 'start' });
+    assert.equal((await request(mf, `/admin/matches/${firstId}`, { cookie: players[0].cookie, method: 'DELETE' })).status, 403);
+    assert.equal((await request(mf, `/admin/matches/${firstId}`, { cookie, method: 'DELETE' })).status, 200);
+    assert.equal((await request(mf, `/rooms/${room.code}`, { cookie: players[0].cookie })).body.state.status, 'playing');
+    await action({ type: 'end' }); await action({ type: 'confirm-end' }); const secondId = room.matchId;
+    const route = `/admin/users/${players[0].body.user.id}/matches`;
+    assert.equal((await request(mf, route, { cookie: players[0].cookie })).status, 403);
+    assert.equal((await request(mf, route, { cookie })).body.total, 1);
+    db.rows("CREATE TRIGGER prevent_delete BEFORE DELETE ON matches BEGIN SELECT RAISE(ABORT, 'test delete failure'); END");
+    assert.equal((await request(mf, `/admin/matches/${secondId}`, { cookie, method: 'DELETE' })).status, 500);
+    assert.equal(db.room(room.code).matchId, secondId);
+    assert.equal(db.one('SELECT COUNT(*) AS n FROM results WHERE match_id=?', secondId).n, 3);
+    db.rows('DROP TRIGGER prevent_delete');
+    assert.equal((await request(mf, `/admin/matches/${secondId}`, { cookie, method: 'DELETE' })).status, 200);
+    room = (await request(mf, `/rooms/${room.code}`, { cookie: players[0].cookie })).body;
+    assert.equal(room.state.status, 'waiting'); assert.notEqual(room.matchId, secondId); assert.deepEqual(room.events, []);
+    await action({ type: 'seat', seat: 0 });
+    for (const p of players) {
+      assert.equal((await request(mf, '/history?players=3', { cookie: p.cookie })).body.games, 0);
+      assert.equal((await request(mf, `/matches/${secondId}`, { cookie: p.cookie })).status, 404);
+    }
+    assert.equal((await request(mf, `/rooms/${room.code}/history`, { cookie: players[0].cookie })).body.length, 0);
+    assert.equal(db.one('SELECT COUNT(*) AS n FROM matches').n, 0);
+  } finally { await mf.close(); }
+});
+
+test('公告：管理员发布和编辑、纯文本、并发版本检查、撤下和重启持久化', async () => {
+  const path = await mkdtemp(join(tmpdir(), 'dianque-notice-'));
+  let mf = await runtime(path);
+  try {
+    const { cookie } = await administrator(mf);
+    const member = await register(mf, '公告读者');
+    const body = { title: '测试公告', content: '<script>alert(1)</script>\n第二行', published: false };
+    assert.equal((await request(mf, '/admin/announcements', { body, cookie: member.cookie })).status, 403);
+    assert.equal((await request(mf, '/admin/announcements', { body: { ...body, title: ' ' }, cookie })).status, 400);
+    const created = await request(mf, '/admin/announcements', { body, cookie }); assert.equal(created.status, 201);
+    const route = `/admin/announcements/${created.body.id}`;
+    assert.deepEqual((await request(mf, '/announcements')).body, []);
+    const update = await request(mf, route, { cookie, body: { ...body, published: true, revision: 1 } }); assert.equal(update.status, 200);
+    assert.equal((await request(mf, route, { cookie, body: { ...body, revision: 1 } })).status, 400);
+    await mf.close(); mf = await runtime(path);
+    const published = (await request(mf, '/announcements')).body;
+    assert.equal(published.length, 1); assert.equal(published[0].content, body.content); assert.equal(published[0].revision, 2);
+    assert.equal((await request(mf, route, { cookie, body: { ...body, revision: 2 } })).status, 200);
+    assert.deepEqual((await request(mf, '/announcements')).body, []);
+  } finally { await mf.close(); await rm(path, { recursive: true, force: true }); }
+});
+
+test('立直语音：空目录、多个音频、中文文件名与非音频隔离', async () => {
+  const path = await mkdtemp(join(tmpdir(), 'dianque-voice-'));
+  const mf = await runtime(path);
+  try {
+    assert.deepEqual((await request(mf, '/riichi-voices')).body, []);
+    await mkdir(join(path, 'riichi'));
+    await writeFile(join(path, 'riichi', '立直一.mp3'), 'test audio');
+    await writeFile(join(path, 'riichi', '立直二.ogg'), 'test audio 2');
+    await writeFile(join(path, 'riichi', 'secret.txt'), 'not audio');
+    const voices = (await request(mf, '/riichi-voices')).body;
+    assert.equal(voices.length, 2);
+    assert.equal(await (await fetch(mf.url + voices.find((v) => v.id === '立直一.mp3').url)).text(), 'test audio');
+    assert.equal((await fetch(mf.url + '/media/riichi/secret.txt')).status, 404);
+    assert.equal((await fetch(mf.url + '/media/riichi/missing.mp3')).status, 404);
+  } finally { await mf.close(); await rm(path, { recursive: true, force: true }); }
+});
 
 test('自行修改密码：原密码校验、请求边界、故障回滚和全部旧会话失效', async () => {
   const mf = await runtime();
@@ -144,7 +265,7 @@ test('管理员：服务端权限、字段白名单、用户查询分页与输�
     assert.equal((await request(mf, '/admin/users?offset=-1', { cookie })).status, 400);
     const result = await request(mf, '/admin/users?q=%EF%BC%B4%EF%BC%A5%EF%BC%B3%EF%BC%B4%EF%BC%A1%EF%BC%A4%EF%BC%AD%EF%BC%A9%EF%BC%AE', { cookie });
     assert.equal(result.body.total, 1);
-    assert.deepEqual(Object.keys(result.body.users[0]).sort(), ['createdAt', 'id', 'isAdmin', 'nickname']);
+    assert.deepEqual(Object.keys(result.body.users[0]).sort(), ['createdAt', 'id', 'isAdmin', 'isSuperAdmin', 'nickname']);
     assert.equal(result.body.users[0].isAdmin, true);
     for (let i = 0; i < 21; i++) await db.one('INSERT INTO users(id,nickname_key,nickname,salt,password_hash,created_at) SELECT ?,?,?,salt,password_hash,? FROM users WHERE id=?', randomUUID(), `seed${i}`, `seed${i}`, new Date().toISOString(), adminId);
     const first = (await request(mf, '/admin/users', { cookie })).body;
@@ -235,7 +356,7 @@ test('账号：密码校验、唯一昵称、Cookie、跨站拒绝、记录隔�
     assert.equal(missing.cookie, undefined);
     const user = await register(mf, 'Test');
     assert.match(user.headers.get('Set-Cookie'), /HttpOnly; SameSite=Lax; Max-Age=2592000; Secure/);
-    assert.deepEqual(Object.keys(user.body.user).sort(), ['id', 'isAdmin', 'nickname']);
+    assert.deepEqual(Object.keys(user.body.user).sort(), ['id', 'isAdmin', 'isSuperAdmin', 'nickname']);
     assert.equal((await request(mf, '/register', { body: { nickname: ' ｔｅｓｔ ', password } })).status, 409);
     assert.equal((await request(mf, '/login', { body: { nickname: 'Test', password: 'wrong-password' } })).status, 401);
     const login = await request(mf, '/login', { body: { nickname: 'test', password } });
@@ -467,7 +588,7 @@ test('退出房间：同步释放座位和转交房主、关闭同账号连接�
     sockets.splice(0, 2);
     room = await updated;
     assert.equal(room.hostId, players[1].body.user.id);
-    assert.deepEqual(room.players.map((p) => [p.id, p.seat]), players.slice(1).map((p, seat) => [p.body.user.id, seat]));
+    assert.deepEqual(room.players.map((p) => [p.id, p.seat]), players.slice(1).map((p, seat) => [p.body.user.id, seat + 1]));
     assert.equal(room.state.status, 'waiting'); assert.equal(room.canUndo, false);
     const session = (await request(mf, '/session', { cookie: device.cookie })).body;
     assert.equal(session.user.id, players[0].body.user.id); assert.equal(session.lastRoom, null); assert.equal(session.activeRoom, null);
@@ -477,7 +598,7 @@ test('退出房间：同步释放座位和转交房主、关闭同账号连接�
     assert.deepEqual((await request(mf, `/matches/${matchId}`, { cookie: players[0].cookie })).body, record);
     assert.equal((await request(mf, '/history', { cookie: players[0].cookie })).body.games, 1);
     room = (await request(mf, `/rooms/${code}/join`, { cookie: players[0].cookie, method: 'POST' })).body;
-    assert.equal(room.players[3].id, players[0].body.user.id); assert.equal(room.hostId, players[1].body.user.id);
+    assert.equal(room.players[0].id, players[0].body.user.id); assert.equal(room.hostId, players[1].body.user.id);
     assert.deepEqual((await request(mf, `/matches/${matchId}`, { cookie: players[0].cookie })).body, record);
   } finally { sockets.forEach((ws) => ws.close()); await mf.close(); }
 });
