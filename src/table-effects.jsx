@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from './api';
 
 export function Dice({ dice }) {
@@ -15,11 +15,17 @@ export function useRiichiVoice(room) {
   const [error, setError] = useState('');
   const audio = useRef(null);
   const seen = useRef(new Set(room.events.map((event) => event.id)));
+  const refresh = useCallback((signal) => {
+    api('/riichi-voices', { signal }).then(setVoices).catch((e) => { if (!signal?.aborted) setError(e.message); });
+  }, []);
   useEffect(() => {
     const abort = new AbortController();
-    api('/riichi-voices', { signal: abort.signal }).then(setVoices).catch((e) => { if (!abort.signal.aborted) setError(e.message); });
-    return () => { abort.abort(); audio.current?.pause(); };
-  }, []);
+    const reload = () => refresh(abort.signal);
+    reload();
+    window.addEventListener('focus', reload);
+    window.addEventListener('dianque:voices-changed', reload);
+    return () => { abort.abort(); audio.current?.pause(); window.removeEventListener('focus', reload); window.removeEventListener('dianque:voices-changed', reload); };
+  }, [refresh]);
   const voice = voices.find((item) => item.id === selected);
   function play(item) {
     if (!item) return;
@@ -37,10 +43,11 @@ export function useRiichiVoice(room) {
     room.events.forEach((event) => seen.current.add(event.id));
     if (fresh.some((event) => event.type === 'riichi' && !event.undone && Date.now() - Date.parse(event.at) < 10000)) play(voice);
   }, [room.events]);
-  return { voices, selected, choose, play: () => play(voice), error };
+  return { voices, selected: voice?.id || '', choose, play: () => play(voice), refresh, error };
 }
 
 export function VoiceSettings({ voice }) {
+  useEffect(() => { const abort = new AbortController(); voice.refresh(abort.signal); return () => abort.abort(); }, [voice.refresh]);
   return <section className="voice-settings"><label>立直语音<select value={voice.selected} onChange={(e) => voice.choose(e.target.value)}><option value="">关闭</option>{voice.voices.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
     <p className="field-help">本设备的立直播报声音，选择后可试听。</p>
     {voice.voices.length ? <button className="text-button" disabled={!voice.voices.some((item) => item.id === voice.selected)} onClick={voice.play}>试听语音</button> : <p className="field-help">音频上传后，可在这里选择立直语音。</p>}

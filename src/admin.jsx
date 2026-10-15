@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ArrowLeft, ChevronRight, LoaderCircle, Search, ShieldCheck } from 'lucide-react';
 import { api } from './api';
 import { Segmented, Toggle } from './ui';
+import { AdminVoices } from './admin-voices';
 
 export function AdminEntry({ open }) {
   return open && <div className="admin-entry"><button className="text-button" onClick={open}><ShieldCheck size={17} />管理中心</button></div>;
@@ -73,7 +74,7 @@ function UserEditor({ target, user, back, saved }) {
     </fieldset></form>}
     {error && <p role="alert" className="warning-text">{error}</p>}
     {!creating && <>
-      {user.isSuperAdmin && !target.isSuperAdmin && <div className="settings-row"><span>普通管理员<small>可管理账号、战绩和公告</small></span><Toggle label="普通管理员" checked={target.isAdmin} disabled={busy} onChange={(isAdmin) => mutate(`/admin/users/${target.id}/role`, { method: 'POST', body: { isAdmin } })} /></div>}
+      {user.isSuperAdmin && !target.isSuperAdmin && <div className="settings-row"><span>普通管理员<small>可管理账号、战绩、公告和立直音频</small></span><Toggle label="普通管理员" checked={target.isAdmin} disabled={busy} onChange={(isAdmin) => mutate(`/admin/users/${target.id}/role`, { method: 'POST', body: { isAdmin } })} /></div>}
       {canEdit && target.id !== user.id && !target.isSuperAdmin && <div className="admin-section">{deleting ? <div className="admin-confirm"><p>确定删除账号「{target.nickname}」？该账号将无法登录，同场其他玩家的战绩保留。</p><div className="panel-actions"><button className="button" disabled={busy} onClick={() => setDeleting(false)}>保留账号</button><button className="button danger" disabled={busy} onClick={() => mutate(`/admin/users/${target.id}`, { method: 'DELETE' })}>确认删除账号</button></div></div> : <button className="text-button danger-text" disabled={busy} onClick={() => setDeleting(true)}>删除账号</button>}</div>}
       <UserMatches target={target} />
     </>}
@@ -148,5 +149,5 @@ function Announcements() {
 
 export function AdminUsers({ user, onSaved }) {
   const [tab, setTab] = useState('users');
-  return <><Segmented className="admin-tabs" label="管理内容" value={tab} onChange={setTab} options={[["users", "账号与战绩"], ["announcements", "公告"]]} />{tab === 'users' ? <Users user={user} onSaved={onSaved} /> : <Announcements />}</>;
+  return <><Segmented className="admin-tabs" label="管理内容" value={tab} onChange={setTab} options={[["users", "账号与战绩"], ["announcements", "公告"], ["voices", "立直音频"]]} />{tab === 'users' ? <Users user={user} onSaved={onSaved} /> : tab === 'announcements' ? <Announcements /> : <AdminVoices />}</>;
 }

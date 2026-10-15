@@ -1,10 +1,11 @@
 import express from 'express';
 import { createServer, STATUS_CODES } from 'node:http';
-import { resolve, dirname, extname } from 'node:path';
-import { readdirSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { Dianque } from './app.js';
+import { GameError } from './game.js';
+import { voiceRoutes } from './voices.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -31,22 +32,7 @@ export async function createApp({ database = resolve(root, 'data/dianque.sqlite'
       ...(!['GET', 'HEAD'].includes(req.method) && req.body?.length ? { body: req.body } : {})
     });
   }
-  const voicesDirectory = resolve(dirname(database), 'riichi');
-  const audioFile = (name) => ['.mp3', '.wav', '.ogg', '.m4a', '.aac'].includes(extname(name).toLowerCase());
-  http.get('/api/riichi-voices', (_req, res, next) => {
-    try {
-      const files = readdirSync(voicesDirectory, { withFileTypes: true }).filter((entry) => entry.isFile() && audioFile(entry.name));
-      res.setHeader('Cache-Control', 'no-store');
-      res.json(files.sort((a, b) => a.name.localeCompare(b.name)).map(({ name }) => ({ id: name, name: name.slice(0, -extname(name).length), url: `/media/riichi/${encodeURIComponent(name)}` })));
-    } catch (error) { if (error.code === 'ENOENT') res.json([]); else next(error); }
-  });
-  http.use('/media/riichi', (req, res, next) => {
-    if (!audioFile(req.path)) return res.sendStatus(404);
-    next();
-  }, express.static(voicesDirectory, { dotfiles: 'deny', fallthrough: false }), (error, _req, res, next) => {
-    if (error.status === 404) return res.sendStatus(404);
-    next(error);
-  });
+  voiceRoutes(http, app, webRequest);
   http.use('/api', express.raw({ type: () => true, limit: '16kb' }), async (req, res) => {
     const response = await app.fetch(webRequest(req), { ip: req.ip });
     res.status(response.status);
@@ -54,8 +40,10 @@ export async function createApp({ database = resolve(root, 'data/dianque.sqlite'
     res.end(Buffer.from(await response.arrayBuffer()));
   });
   http.use((error, _req, res, _next) => {
-    if (error.status !== 413) console.error(error);
-    res.status(error.status === 413 ? 413 : 500).json({ error: error.status === 413 ? '请求过大' : '服务暂时不可用，请重试' });
+    const status = error instanceof GameError ? 400 : error.status || 500;
+    if (status >= 500) console.error(error);
+    if (error.retryAfter) res.set('Retry-After', String(error.retryAfter));
+    res.set('Cache-Control', 'no-store').status(status).json({ error: status >= 500 ? '服务暂时不可用，请重试' : status === 413 ? '请求过大' : error.type === 'entity.parse.failed' ? '请求格式错误' : error.message });
   });
   server.on('upgrade', async (req, socket, head) => {
     if (!req.url.startsWith('/api/')) return dev ? undefined : socket.destroy();
