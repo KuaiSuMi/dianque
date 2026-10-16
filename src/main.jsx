@@ -29,7 +29,16 @@ function DigitDisplay({ value, compact = false }) {
     return () => animation.cancel();
   }, [value, reduce]);
   const segments = ['abcdef', 'bc', 'abdeg', 'abcdg', 'bcfg', 'acdfg', 'acdefg', 'abc', 'abcdefg', 'abcdfg'];
-  const points = { a: '7,2 35,2 40,7 35,12 7,12 2,7', b: '37,14 42,9 42,39 37,44 32,39 32,19', c: '37,46 42,51 42,81 37,86 32,81 32,51', d: '7,84 35,84 40,89 35,94 7,94 2,89', e: '5,46 10,51 10,81 5,86 0,81 0,51', f: '5,9 10,14 10,39 5,44 0,39 0,14', g: '7,43 35,43 40,48 35,53 7,53 2,48' };
+  // 关于 x=22、y=48 镜像；横段端点取 2√2，保证斜缝和竖段间缝均宽 2。
+  const points = {
+    a: '7.8284,2 36.1716,2 41.1716,7 36.1716,12 7.8284,12 2.8284,7',
+    b: '43,8 43,47 33,37 33,18',
+    c: '43,49 43,88 33,78 33,59',
+    d: '7.8284,84 36.1716,84 41.1716,89 36.1716,94 7.8284,94 2.8284,89',
+    e: '1,49 11,59 11,78 1,88',
+    f: '1,8 11,18 11,37 1,47',
+    g: '7.8284,43 36.1716,43 41.1716,48 36.1716,53 7.8284,53 2.8284,48',
+  };
   return <span ref={ref} className={`digits ${compact ? 'digits-small' : ''}`} role="img" aria-label={`${fmt(value)} 点`}>
     {String(value).split('').map((char, index) => <svg key={index} viewBox="0 0 44 96" aria-hidden="true">{Object.entries(points).map(([key, points]) => <polygon key={key} points={points} className={(char === '-' ? key === 'g' : segments[Number(char)]?.includes(key)) ? 'lit' : 'unlit'} />)}</svg>)}
   </span>;
