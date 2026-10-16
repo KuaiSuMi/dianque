@@ -148,7 +148,7 @@ function Announcements() {
       <label>标题<input maxLength={80} required value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} /></label>
       <label>正文（选填）<textarea maxLength={3000} rows={8} value={editing.content} onChange={(e) => setEditing({ ...editing, content: e.target.value })} /></label>
       <div className="settings-row"><span>发布公告<small>关闭后仅管理员可见</small></span><Toggle label="发布公告" checked={!!editing.published} disabled={busy} onChange={(published) => setEditing({ ...editing, published })} /></div>
-      <div className="settings-row"><span>自动弹窗<small>发布后在所有页面弹出，每个浏览器仅一次</small></span><Toggle label="自动弹窗" checked={!!editing.popup} disabled={busy} onChange={(popup) => setEditing({ ...editing, popup })} /></div>
+      <div className="settings-row"><span>自动弹窗<small>每个浏览器每个版本只弹一次，重新发布后重置</small></span><Toggle label="自动弹窗" checked={!!editing.popup} disabled={busy} onChange={(popup) => setEditing({ ...editing, popup })} /></div>
       <button className="button primary full" disabled={busy}>{editing.published ? '保存并发布' : '保存草稿'}</button>
       {editing.id && <button type="button" className="text-button danger-text admin-delete" onClick={() => setDeleting(true)}>删除公告</button>}
     </fieldset></form>}

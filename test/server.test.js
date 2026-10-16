@@ -178,7 +178,10 @@ test('公告：管理员发布和编辑、纯文本、并发版本检查、撤�
     const published = (await request(mf, '/announcements')).body;
     assert.equal(published.length, 1); assert.equal(published[0].content, body.content); assert.equal(published[0].revision, 2);
     assert.equal(published[0].popup, 1);
-    assert.equal((await request(mf, route, { cookie, body: { ...body, revision: 2 } })).status, 200);
+    const republished = await request(mf, route, { cookie, body: { ...body, title: '编辑后重新发布', published: true, revision: 2 } });
+    assert.equal(republished.status, 200); assert.equal(republished.body.revision, 3);
+    assert.equal((await request(mf, '/announcements')).body[0].revision, 3);
+    assert.equal((await request(mf, route, { cookie, body: { ...body, revision: 3 } })).status, 200);
     assert.deepEqual((await request(mf, '/announcements')).body, []);
   } finally { await mf.close(); await rm(path, { recursive: true, force: true }); }
 });
