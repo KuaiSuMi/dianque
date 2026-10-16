@@ -102,8 +102,7 @@ test('快捷结算落账不重复追加本场，供托仍由服务端另行分�
   act(3, { type: 'riichi' });
   const transfers = paymentTransfers({ mode: 'ron', entry: 'quick', honba: 2, rows: [{ from: 0, to: 1 }], amounts: { 1: 3900 } });
   act(0, { type: 'propose', mode: 'ron', transfers });
-  assert.deepEqual(stateOf(room).scores, [25000, 25000, 25000, 24000]);
-  act(1, { type: 'receive', pendingId: room.pending.id });
+  assert.equal(room.pending, null);
   assert.deepEqual(stateOf(room).scores, [20500, 30500, 25000, 24000]);
   assert.equal(stateOf(room).pot, 0);
   assert.equal(stateOf(room).hand, 1);

@@ -663,6 +663,53 @@ test('认证请求仍按 IP 限流，注册和登录共享额度，到期后恢�
   } finally { await mf.close(); }
 });
 
+test('简化支付默认开启：直接结算广播、重复请求幂等，关闭后等待双方，设置与流水持久化', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dianque-payment-'));
+  let mf = await runtime(dir), ws;
+  try {
+    const players = [];
+    for (const name of ['支付甲', '支付乙', '支付丙']) players.push(await register(mf, name));
+    assert.equal((await request(mf, '/rooms', { cookie: players[0].cookie, body: { simpleConfirm: 'true' } })).status, 400);
+    let room = (await request(mf, '/rooms', { cookie: players[0].cookie, body: { playerCount: 3 } })).body;
+    assert.equal(room.config.simpleConfirm, true);
+    assert.equal(room.config.autoDice, false);
+    for (const player of players.slice(1)) room = (await request(mf, `/rooms/${room.code}/join`, { cookie: player.cookie, method: 'POST' })).body;
+    async function action(seat, data, status = 200) {
+      const result = await request(mf, `/rooms/${room.code}/action`, { cookie: players[seat].cookie, body: { revision: room.revision, roundId: room.state.roundId, requestId: randomUUID(), ...data } });
+      assert.equal(result.status, status, JSON.stringify(result.body));
+      if (status === 200) room = result.body;
+    }
+    await action(0, { type: 'start' });
+    ws = await socket(mf, room.code, players[2].cookie);
+    const paid = message(ws, (r) => r.events?.at(-1)?.type === 'win');
+    const proposal = { type: 'propose', mode: 'ron', transfers: [{ from: 0, to: 1, amount: 3900 }], requestId: randomUUID(), revision: room.revision };
+    await action(1, proposal);
+    const broadcast = await paid;
+    assert.equal(broadcast.pending, null); assert.deepEqual(broadcast.state.scores, [21100, 28900, 25000]);
+    const revision = room.revision;
+    await action(1, proposal); assert.equal(room.revision, revision);
+    assert.equal(room.events.filter((event) => event.type === 'win').length, 1);
+    const changed = message(ws, (r) => r.config?.simpleConfirm === false);
+    await action(2, { type: 'table-settings', simpleConfirm: false, autoDice: false });
+    assert.equal((await changed).config.simpleConfirm, false);
+    await action(1, { type: 'propose', mode: 'ron', transfers: [{ from: 0, to: 1, amount: 1000 }] });
+    const pendingId = room.pending.id;
+    await action(2, { type: 'table-settings', simpleConfirm: true, autoDice: false }, 400);
+    await action(1, { type: 'receive', pendingId }, 400);
+    assert.deepEqual(room.state.scores, [21100, 28900, 25000]);
+    await action(0, { type: 'approve', pendingId });
+    await action(1, { type: 'receive', pendingId });
+    assert.deepEqual(room.state.scores, [20100, 29900, 25000]);
+    await action(2, { type: 'table-settings', simpleConfirm: true, autoDice: false });
+    await action(1, { type: 'propose', mode: 'tsumo', transfers: [{ from: 0, to: 1, amount: 1000 }, { from: 2, to: 1, amount: 1000 }] });
+    assert.equal(room.pending, null); assert.deepEqual(room.state.scores, [19100, 31900, 24000]);
+    const saved = structuredClone(room);
+    ws.close(); ws = null; await mf.close(); mf = await runtime(dir);
+    room = (await request(mf, `/rooms/${room.code}`, { cookie: players[0].cookie })).body;
+    assert.deepEqual(room.config, saved.config); assert.deepEqual(room.state, saved.state); assert.deepEqual(room.events, saved.events);
+  } finally { ws?.close(); await mf.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test('对局及结算期间禁止本人和管理员改密码；牌桌开关广播并保存', async () => {
   const mf = await runtime();
   let ws;
@@ -677,9 +724,9 @@ test('对局及结算期间禁止本人和管理员改密码；牌桌开关广�
     }
     await act('start');
     ws = await socket(mf, room.code, guest.cookie);
-    const update = message(ws, (r) => r.config?.autoDice && r.config?.tsumoConfirm);
+    const update = message(ws, (r) => r.config?.autoDice && r.config?.simpleConfirm === false);
     const before = structuredClone(room.state);
-    await act('table-settings', { autoDice: true, tsumoConfirm: true }, guest.cookie);
+    await act('table-settings', { autoDice: true, simpleConfirm: false }, guest.cookie);
     assert.deepEqual((await update).config, room.config); assert.deepEqual(room.state, before);
     assert.deepEqual((await request(mf, `/rooms/${room.code}`, { cookie: guest.cookie })).body.config, room.config);
     const id = guest.body.user.id;
@@ -769,7 +816,7 @@ test('Node 服务：四端同步、并发收款、账号锁定、结算不可撤
   try {
     const players = [];
     for (const name of ['东家', '南家', '西家', '北家']) players.push(await register(mf, name));
-    let room = (await request(mf, '/rooms', { cookie: players[0].cookie, body: {} })).body;
+    let room = (await request(mf, '/rooms', { cookie: players[0].cookie, body: { simpleConfirm: false } })).body;
     const code = room.code;
     const action = async (i, data, status = 200) => {
       const result = await request(mf, `/rooms/${code}/action`, { cookie: players[i].cookie, body: { revision: room.revision, roundId: room.state.roundId, requestId: randomUUID(), ...data } });

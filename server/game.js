@@ -19,11 +19,11 @@ function initialState(config, count) {
   return { status: 'waiting', hand: 0, roundId: randomUUID(), honba: 0, pot: 0, scores: Array(count).fill(config.startPoints), riichi: Array(count).fill(false) };
 }
 
-function checkConfig({ startPoints, length, tsumoConfirm = false, autoDice = false }, count) {
+function checkConfig({ startPoints, length, simpleConfirm = true, autoDice = false }, count) {
   check([3, 4].includes(count), '请选择三人或四人对局');
   check(Number.isSafeInteger(startPoints) && startPoints >= 1000 && startPoints <= 1000000 && startPoints % 100 === 0, '起始点数须为 1000～1000000 之间的整百数');
   check(['east', 'south'].includes(length), '请选择东风场或南风场');
-  check(typeof tsumoConfirm === 'boolean' && typeof autoDice === 'boolean', '房间开关须为布尔值');
+  check(typeof simpleConfirm === 'boolean' && typeof autoDice === 'boolean', '房间开关须为布尔值');
 }
 
 function checkScores(scores, count) {
@@ -38,7 +38,7 @@ function finalResult(state) {
 }
 
 export function newRoom(code, player, config, count = 4) {
-  config = { tsumoConfirm: false, autoDice: false, ...config };
+  config = { simpleConfirm: true, autoDice: false, ...config };
   checkConfig(config, count);
   check(Number.isInteger(config.startDealer) && config.startDealer >= 0 && config.startDealer < count, '起庄位置无效');
   const state = initialState(config, count);
@@ -139,7 +139,7 @@ export function applyAction(room, actorId, action) {
     checkConfig(action, action.playerCount);
     check(room.players.length <= action.playerCount, '已有四人入座，不能改为三人模式');
     prepareNextMatch(room);
-    room.config = { startPoints: action.startPoints, length: action.length, startDealer: room.config.startDealer % action.playerCount, tsumoConfirm: action.tsumoConfirm ?? false, autoDice: action.autoDice ?? false };
+    room.config = { startPoints: action.startPoints, length: action.length, startDealer: room.config.startDealer % action.playerCount, simpleConfirm: action.simpleConfirm ?? true, autoDice: action.autoDice ?? false };
     for (const p of room.players.filter((p) => p.seat >= action.playerCount)) {
       p.seat = Array.from({ length: action.playerCount }, (_, seat) => seat).find((seat) => !room.players.some((other) => other.seat === seat));
     }
@@ -149,9 +149,9 @@ export function applyAction(room, actorId, action) {
   } else if (action.type === 'table-settings') {
     check(['waiting', 'playing', 'ended'].includes(state.status), '请先确认对战结算，再修改牌桌设置');
     check(!room.pending && Object.keys(room.drawVotes).length === 0, '请先完成或取消当前结算，再修改牌桌设置');
-    check(typeof action.tsumoConfirm === 'boolean' && typeof action.autoDice === 'boolean', '确认和骰子开关须为布尔值');
+    check(typeof action.simpleConfirm === 'boolean' && typeof action.autoDice === 'boolean', '确认和骰子开关须为布尔值');
     prepareNextMatch(room);
-    room.config.tsumoConfirm = action.tsumoConfirm;
+    room.config.simpleConfirm = action.simpleConfirm;
     room.config.autoDice = action.autoDice;
   } else if (action.type === 'start') {
     check(['waiting', 'ended'].includes(state.status) && room.players.length === count, `${count === 3 ? '三' : '四'}人入座后才能开局`);
@@ -238,20 +238,19 @@ export function applyAction(room, actorId, action) {
       if (action.mode === 'ron') check(payers.length === 1 && (payers[0] === seat || (winners.length === 1 && winners[0] === seat)) && winners.length === transfers.length, '荣和须由放铳者向不同的和牌者支付，或由单一和牌者请求收款');
       else check(transfers.length === count - 1 && payers.length === count - 1 && winners.length === 1 && (winners[0] === seat || payers.includes(seat)), `自摸必须包含${count === 3 ? '两' : '三'}家向同一人的支付`);
       room.pending = { id: randomUUID(), mode: action.mode, createdBy: seat, transfers, payers, winners, approved: payers.includes(seat) ? [seat] : [], received: [] };
+      if (room.config.simpleConfirm) settle(room);
     } else if (action.type === 'approve' || action.type === 'receive' || action.type === 'cancel') {
       const pending = room.pending;
       check(pending && pending.id === action.pendingId, '这笔结算已完成或已取消');
-      const needsApproval = pending.mode !== 'tsumo' || room.config.tsumoConfirm;
       if (action.type === 'cancel') {
-        check((needsApproval && pending.payers.includes(seat)) || pending.winners.includes(seat), '只有确认方可以取消这笔结算');
+        check(pending.payers.includes(seat) || pending.winners.includes(seat), '只有确认方可以取消这笔结算');
         room.pending = null;
       } else if (action.type === 'approve') {
-        check(needsApproval, '本房间自摸仅由自摸家确认');
         check(pending.payers.includes(seat), '只有付款方可以确认付款');
         check(!pending.approved.includes(seat), '你已确认付款');
         pending.approved.push(seat);
       } else {
-        check(!needsApproval || pending.approved.length === pending.payers.length, '请等待所有付款方确认');
+        check(pending.approved.length === pending.payers.length, '请等待所有付款方确认');
         check(pending.winners.includes(seat), '只有收款方可以确认收款');
         check(!pending.received.includes(seat), '你已确认收款');
         pending.received.push(seat);

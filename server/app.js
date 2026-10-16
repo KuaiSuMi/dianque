@@ -379,7 +379,7 @@ export class Dianque {
         this.limit(`create:${user.id}`, 10, 3600000);
         let code;
         do { code = Array.from({ length: 4 }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[randomInt(26)]).join(''); } while (this.one('SELECT code FROM rooms WHERE code=?', code));
-        const room = newRoom(code, { id: user.id, name: user.nickname, seat: 0 }, { startPoints: body.startPoints ?? 25000, startDealer: 0, length: body.length ?? 'south', tsumoConfirm: body.tsumoConfirm ?? false, autoDice: body.autoDice ?? false }, body.playerCount ?? 4);
+        const room = newRoom(code, { id: user.id, name: user.nickname, seat: 0 }, { startPoints: body.startPoints ?? 25000, startDealer: 0, length: body.length ?? 'south', simpleConfirm: body.simpleConfirm ?? true, autoDice: body.autoDice ?? false }, body.playerCount ?? 4);
         this.transaction(() => {
           this.save(room);
           this.rows('INSERT INTO members VALUES (?,?,?)', user.id, code, new Date().toISOString());
