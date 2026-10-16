@@ -458,7 +458,7 @@ function Table({ room, me, act, pendingAction, connected, notify, home, openAdmi
         setAutoDice={(autoDice) => act({ type: 'table-settings', autoDice, tsumoConfirm: room.config.tsumoConfirm })} />
       <p className="field-help">{pending ? '先完成或取消当前结算，再修改牌桌设置。' : '房间内所有人均可修改，全桌同步。'}</p>
       <div className="settings-row"><span>保持屏幕常亮<small>{'wakeLock' in navigator ? '前台显示时生效' : '需要 HTTPS 与支持的浏览器'}</small></span><Toggle label="保持屏幕常亮" checked={wake} disabled={!('wakeLock' in navigator)} onChange={setWake} /></div><VoiceSettings voice={voice} />
-      <details className="rules"><summary>使用说明</summary><p>一人创建牌桌，其他人扫码或输入房间码加入。房间内所有玩家平权，满员后任何人都能随机选座、开始对局。</p><p>点击对手的点数卡片发起支付；自摸、立直和流局使用下方按钮，按页面提示确认。</p><p>记错可用撤销、重做；所有人都可在牌桌设置中修改当前场况，流水记录操作人和修改内容。每笔操作可在对战记录中查看。</p><p>任何人都可结束对战、修改分数和确认结算，也可在结算页删除本局记录。返回大厅可继续下一场；首页“我的对局”可查看个人战绩。</p><p>换设备时登录原账号即可回座。</p></details>
+      <details className="rules"><summary>使用说明</summary><p>点对手的点数卡片，选择“我方支付”或“对方支付”。自摸、立直、流局用下方按钮。</p><p>记错可撤销、重做；局数或点数有误，用“修改当前场况”调整。</p><p>打完点“结束对战”，核对分数后确认结算。</p></details>
     </Sheet>}</AnimatePresence>
   </main>;
 }
