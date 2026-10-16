@@ -65,12 +65,13 @@ export function leaveRoom(room, actorId) {
 }
 
 function commit(room, state, entry) {
+  const before = stateOf(room);
   if (['start', 'win', 'draw'].includes(entry.type)) {
     if (room.config.autoDice) state.dice = { id: randomUUID(), values: [randomInt(1, 7), randomInt(1, 7)] };
     else delete state.dice;
   }
   room.history = room.history.slice(0, room.cursor + 1);
-  room.history.push({ state, entry: { id: randomUUID(), at: new Date().toISOString(), ...entry } });
+  room.history.push({ state, entry: { id: randomUUID(), at: new Date().toISOString(), label: handLabel(before), honba: before.honba, ...entry } });
   room.cursor++;
   room.pending = null;
   room.drawVotes = {};
@@ -112,7 +113,7 @@ function settle(room) {
   const count = state.scores.length;
   // 双响、三响的供托归放铳者下家方向最近的和牌者。
   const potWinner = pending.mode === 'tsumo' ? winners[0] : winners.toSorted((a, b) => ((a - payer + count) % count) - ((b - payer + count) % count))[0];
-  const entry = { type: 'win', label: handLabel(state), honba: state.honba, mode: pending.mode, transfers: pending.transfers, pot: state.pot, potWinner, winners, before };
+  const entry = { type: 'win', mode: pending.mode, transfers: pending.transfers, pot: state.pot, potWinner, winners, before };
   state.scores[potWinner] += state.pot * 1000;
   state.pot = 0;
   advance(state, winners.includes(dealerOf(room)), false);
@@ -158,7 +159,7 @@ export function applyAction(room, actorId, action) {
     prepareNextMatch(room);
     state = clone(stateOf(room));
     state.status = 'playing';
-    commit(room, state, { type: 'start', label: '对局开始' });
+    commit(room, state, { type: 'start' });
   } else if (action.type === 'seat') {
     check(['waiting', 'ended'].includes(state.status), '只能在房间大厅换座');
     check(Number.isInteger(action.seat) && action.seat >= 0 && action.seat < count && action.seat !== seat, '请选择其他座位');
@@ -197,12 +198,12 @@ export function applyAction(room, actorId, action) {
       checkScores(action.scores, count);
       const before = [...state.scores];
       state.scores = [...action.scores];
-      commit(room, state, { type: 'settlement-scores', label: '结算分数调整', before, after: [...state.scores] });
+      commit(room, state, { type: 'settlement-scores', before, after: [...state.scores] });
     } else {
       const { scores, potWinner } = finalResult(state);
       const before = [...state.scores], pot = state.pot;
       Object.assign(state, { status: 'ended', scores, pot: 0, roundId: randomUUID() });
-      commit(room, state, { type: 'end', label: '对战结束', before, after: [...scores], pot, potWinner });
+      commit(room, state, { type: 'end', before, after: [...scores], pot, potWinner });
     }
   } else {
     check(state.status === 'playing', '当前不在对局中');
@@ -215,7 +216,7 @@ export function applyAction(room, actorId, action) {
       const before = { hand: state.hand, honba: state.honba, pot: state.pot, scores: [...state.scores] };
       if (state.hand !== action.hand) state.riichi.fill(false);
       Object.assign(state, { hand: action.hand, honba: action.honba, pot: action.pot, scores: [...action.scores], roundId: randomUUID() });
-      commit(room, state, { type: 'adjust', seat, label: '场况调整', before, after: { hand: state.hand, honba: state.honba, pot: state.pot, scores: [...state.scores] } });
+      commit(room, state, { type: 'adjust', seat, before, after: { hand: state.hand, honba: state.honba, pot: state.pot, scores: [...state.scores] } });
     } else if (action.type === 'riichi') {
       check(!room.pending && Object.keys(room.drawVotes).length === 0, '请先完成当前结算');
       check(!state.riichi[seat], '本局已经立直');
@@ -223,7 +224,7 @@ export function applyAction(room, actorId, action) {
       state.scores[seat] -= 1000;
       state.pot++;
       state.riichi[seat] = true;
-      commit(room, state, { type: 'riichi', seat, label: handLabel(state), honba: state.honba });
+      commit(room, state, { type: 'riichi', seat });
     } else if (action.type === 'propose') {
       check(!room.pending && Object.keys(room.drawVotes).length === 0, '已有待确认的结算');
       check(['ron', 'tsumo'].includes(action.mode), '和牌类型无效');
@@ -268,14 +269,14 @@ export function applyAction(room, actorId, action) {
           const pool = (count - 1) * 1000;
           for (let i = 0; i < count; i++) state.scores[i] += ready.includes(i) ? pool / ready.length : -pool / (count - ready.length);
         }
-        const entry = { type: 'draw', label: handLabel(state), honba: state.honba, ready, after: [...state.scores] };
+        const entry = { type: 'draw', ready, after: [...state.scores] };
         advance(state, ready.includes(dealerOf(room)), true);
         commit(room, state, entry);
       }
     } else if (action.type === 'end') {
       check(!room.pending && Object.keys(room.drawVotes).length === 0, '请先完成或取消当前结算');
       Object.assign(state, { status: 'settling', roundId: randomUUID() });
-      commit(room, state, { type: 'settlement', label: '进入对战结算' });
+      commit(room, state, { type: 'settlement' });
     } else throw new GameError('未知操作');
   }
   room.revision++;

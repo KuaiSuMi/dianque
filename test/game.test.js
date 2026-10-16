@@ -17,6 +17,34 @@ function ron(r, from, to, amount) { act(r, from, { type: 'propose', mode: 'ron',
 function conserved(r) { assert.equal(stateOf(r).scores.reduce((a, b) => a + b) + stateOf(r).pot * 1000, 100000); }
 function finish(r) { act(r, 0, { type: 'end' }); act(r, 0, { type: 'confirm-end' }); }
 
+for (const count of [3, 4]) test(`${count} 人各类流水记录操作时的场况，换局、撤销重做和续场不串局`, () => {
+  const r = room(count, { simpleConfirm: true });
+  act(r, 0, { type: 'adjust', hand: count - 1, honba: 2, pot: 1, scores: [...stateOf(r).scores] });
+  act(r, 0, { type: 'riichi' });
+  act(r, 0, { type: 'propose', mode: 'ron', transfers: [{ from: 0, to: 1, amount: 1000 }] });
+  assert.equal(stateOf(r).hand, count);
+  act(r, 0, { type: 'propose', mode: 'tsumo', transfers: Array.from({ length: count - 1 }, (_, i) => ({ from: i + 1, to: 0, amount: 1000 })) });
+  for (let seat = 0; seat < count; seat++) act(r, seat, { type: 'draw', tenpai: false });
+  const events = structuredClone(publicRoom(r).events);
+  act(r, 0, { type: 'undo' });
+  assert.deepEqual(publicRoom(r).events.at(-1), { ...events.at(-1), undone: true });
+  act(r, 0, { type: 'redo' });
+  assert.deepEqual(publicRoom(r).events, events);
+  act(r, 0, { type: 'end' });
+  const scores = [...stateOf(r).scores]; scores[0] -= 100; scores[1] += 100;
+  act(r, 1, { type: 'settlement-scores', scores });
+  act(r, 1, { type: 'confirm-end' });
+  const finished = structuredClone(publicRoom(r).events);
+  assert.deepEqual(finished.map(({ type, label, honba }) => [type, label, honba]), [
+    ['start', '东 1 局', 0], ['adjust', '东 1 局', 0], ['riichi', `东 ${count} 局`, 2],
+    ['win', `东 ${count} 局`, 2], ['win', '南 1 局', 0], ['draw', '南 1 局', 1],
+    ['settlement', '南 2 局', 2], ['settlement-scores', '南 2 局', 2], ['end', '南 2 局', 2]
+  ]);
+  act(r, 0, { type: 'start' });
+  assert.deepEqual(r.matches[0].events, finished);
+  assert.deepEqual(publicRoom(r).events.map(({ type, label, honba }) => [type, label, honba]), [['start', '东 1 局', 0]]);
+});
+
 for (const count of [3, 4]) test(`${count} 人无房主：每个座位均可设置、选座、开局、改场况和结算`, () => {
   for (let actor = 0; actor < count; actor++) {
     const r = newRoom('TEST', { id: 'p0', name: '玩家0', seat: 0 }, { startPoints: 25000, startDealer: 0, length: 'south' }, count);

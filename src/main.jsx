@@ -283,8 +283,8 @@ function DrawSheet({ room, me, act, busy, close }) {
 
 function EventRow({ event, room }) {
   const name = (seat) => room.players[seat]?.name || '';
-  let title = event.label, description = '', change = '';
-  if (event.type === 'riichi') { title = `${name(event.seat)} 立直`; description = `${event.label} · ${event.honba} 本场`; change = '−1,000'; }
+  let title = { start: '对局开始', settlement: '进入对战结算', 'settlement-scores': '结算分数调整', end: '对战结束', adjust: '场况调整' }[event.type], description = '', change = '';
+  if (event.type === 'riichi') { title = `${name(event.seat)} 立直`; change = '−1,000'; }
   if (event.type === 'win') { title = `${event.winners.map(name).join('、')} ${event.mode === 'tsumo' ? '自摸' : '荣和'}`; description = event.transfers.map((t) => `${name(t.from)} → ${name(t.to)} ${fmt(t.amount)}`).join(' / '); change = `+${fmt(event.transfers.reduce((n, t) => n + t.amount, 0))}`; }
   if (event.type === 'draw') { title = '流局'; description = event.ready.length ? `${event.ready.map(name).join('、')} 听牌` : '全员未听'; change = '本场 +1'; }
   if (event.type === 'settlement-scores') description = event.after.map((score, seat) => `${name(seat)} ${fmt(event.before[seat])} → ${fmt(score)}`).join(' / ');
@@ -294,6 +294,7 @@ function EventRow({ event, room }) {
     if (Number.isInteger(event.seat)) title = `${name(event.seat)} · 场况调整`;
     description = `${round(event.before)} → ${round(event.after)}；${event.after.scores.map((score, seat) => `${name(seat)} ${fmt(event.before.scores[seat])} → ${fmt(score)}`).join(' / ')}`;
   }
+  if (event.type !== 'adjust' && Number.isInteger(event.honba)) description = [`${event.label} · ${event.honba} 本场`, description].filter(Boolean).join(' · ');
   return <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2 }} className={`event-row ${event.undone ? 'undone' : ''}`}><div className="event-detail"><strong>{title}{event.undone && <small>已撤销</small>}</strong>{(description || event.pot > 0) && <p>{description}{event.pot > 0 && ` · 供托 ${event.pot} 根${Number.isInteger(event.potWinner) ? ` → ${name(event.potWinner)}` : '保留'}`}</p>}</div><div className="event-value"><strong>{change}</strong><time>{new Date(event.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time></div></motion.div>;
 }
 
