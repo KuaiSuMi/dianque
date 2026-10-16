@@ -700,13 +700,75 @@ test('对局及结算期间禁止本人和管理员改密码；牌桌开关广�
   } finally { ws?.close(); await mf.close(); }
 });
 
+test('全员平权：普通成员操作同步，删除本场释放全桌并保留旧战绩，失败与过期请求不丢数据', async () => {
+  const mf = await runtime(), sockets = [];
+  try {
+    const players = [];
+    for (const name of ['平权甲', '平权乙', '平权丙', '平权丁']) players.push(await register(mf, name));
+    const outsider = await register(mf, '旁观者');
+    let room = (await request(mf, '/rooms', { cookie: players[0].cookie, body: {} })).body;
+    const code = room.code;
+    for (const p of players.slice(1)) room = (await request(mf, `/rooms/${code}/join`, { cookie: p.cookie, method: 'POST' })).body;
+    const action = async (actor, data, status = 200) => {
+      const response = await request(mf, `/rooms/${code}/action`, { cookie: actor.cookie, body: { revision: room.revision, requestId: randomUUID(), ...data } });
+      assert.equal(response.status, status, JSON.stringify(response.body));
+      if (status === 200) room = response.body;
+    };
+    await action(players[1], { type: 'configure', playerCount: 4, length: 'east', startPoints: 30000 });
+    await action(players[2], { type: 'shuffle' });
+    await action(players[3], { type: 'start' });
+    await action(players[1], { type: 'adjust', hand: 4, honba: 2, pot: 0, scores: [27000, 29000, 31000, 33000] });
+    const adjustment = room.events.at(-1);
+    assert.equal(adjustment.seat, room.players.find((p) => p.id === players[1].body.user.id).seat);
+    await action(players[2], { type: 'end' }); await action(players[3], { type: 'confirm-end' });
+    const firstId = room.matchId;
+    const first = (await request(mf, `/matches/${firstId}`, { cookie: players[0].cookie })).body;
+    assert.deepEqual(first.events.find((e) => e.id === adjustment.id), adjustment);
+    await action(players[1], { type: 'start' });
+    await action(players[2], { type: 'discard-match' }, 400);
+    await action(players[2], { type: 'end' });
+    const discardedId = room.matchId, stale = room.revision;
+    for (const type of ['configure', 'shuffle', 'start', 'adjust', 'end', 'settlement-scores', 'confirm-end', 'discard-match']) await action(outsider, { type }, 403);
+    await action(players[3], { type: 'settlement-scores', scores: [32000, 31000, 29000, 28000] });
+    await action(players[1], { type: 'discard-match', revision: stale }, 400);
+    const before = structuredClone(room);
+    mf.app.rows("CREATE TRIGGER prevent_discard BEFORE UPDATE ON rooms BEGIN SELECT RAISE(ABORT, 'test discard failure'); END");
+    await action(players[1], { type: 'discard-match' }, 500);
+    assert.deepEqual((await request(mf, `/rooms/${code}`, { cookie: players[0].cookie })).body, before);
+    for (const p of players) assert.equal((await request(mf, '/session', { cookie: p.cookie })).body.activeRoom, code);
+    mf.app.rows('DROP TRIGGER prevent_discard');
+    for (const p of players) sockets.push(await socket(mf, code, p.cookie));
+    const updates = sockets.map((ws) => message(ws, (r) => r.state?.status === 'waiting'));
+    const deletion = { type: 'discard-match', revision: room.revision, requestId: randomUUID() };
+    await action(players[1], deletion);
+    for (const update of await Promise.all(updates)) { assert.deepEqual(update.state, room.state); assert.deepEqual(update.events, []); }
+    assert.notEqual(room.matchId, discardedId);
+    assert.equal(room.canUndo, false); assert.equal(room.canRedo, false);
+    assert.deepEqual(room.state.scores, [30000, 30000, 30000, 30000]);
+    assert.equal(mf.app.one('SELECT COUNT(*) AS n FROM results WHERE match_id=?', discardedId).n, 0);
+    for (const p of players) {
+      assert.equal((await request(mf, '/session', { cookie: p.cookie })).body.activeRoom, null);
+      assert.equal((await request(mf, '/history', { cookie: p.cookie })).body.games, 1);
+      assert.equal((await request(mf, `/matches/${discardedId}`, { cookie: p.cookie })).status, 404);
+      assert.deepEqual((await request(mf, `/matches/${firstId}`, { cookie: p.cookie })).body, first);
+    }
+    await action(players[2], { type: 'start' });
+    const next = structuredClone(room);
+    await action(players[1], deletion); assert.deepEqual(room, next);
+    await action(players[1], { type: 'discard-match', revision: deletion.revision }, 400);
+    await action(players[3], { type: 'end' }); await action(players[2], { type: 'confirm-end' });
+    assert.equal((await request(mf, '/history', { cookie: players[1].cookie })).body.games, 2);
+    assert.equal(mf.app.one('SELECT COUNT(*) AS n FROM matches').n, 2);
+  } finally { sockets.forEach((ws) => ws.close()); await mf.close(); }
+});
+
 test('Node 服务：四端同步、并发收款、账号锁定、结算不可撤销与重启保存', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'dianque-server-'));
   let mf = await runtime(dir);
   const sockets = [];
   try {
     const players = [];
-    for (const name of ['房主', '南家', '西家', '北家']) players.push(await register(mf, name));
+    for (const name of ['东家', '南家', '西家', '北家']) players.push(await register(mf, name));
     let room = (await request(mf, '/rooms', { cookie: players[0].cookie, body: {} })).body;
     const code = room.code;
     const action = async (i, data, status = 200) => {
@@ -720,11 +782,12 @@ test('Node 服务：四端同步、并发收款、账号锁定、结算不可撤
     const started = sockets.map((ws) => message(ws, (r) => r.state?.status === 'playing'));
     await action(0, { type: 'start' });
     for (const state of await Promise.all(started)) assert.deepEqual(state.state, room.state);
-    const secondDevice = await request(mf, '/login', { body: { nickname: '房主', password } });
+    const secondDevice = await request(mf, '/login', { body: { nickname: '东家', password } });
     assert.equal(secondDevice.body.activeRoom, code);
     assert.equal((await request(mf, `/rooms/${code}/join`, { cookie: secondDevice.cookie, method: 'POST' })).body.players.length, 4);
     assert.equal((await request(mf, '/rooms', { cookie: secondDevice.cookie, body: {} })).status, 400);
-    await action(1, { type: 'end' }, 400);
+    await action(1, { type: 'end' });
+    await action(2, { type: 'undo' });
     const riichi = { type: 'riichi', requestId: randomUUID() };
     await action(0, riichi); const revision = room.revision;
     await action(0, riichi); assert.equal(room.revision, revision); assert.equal(room.state.pot, 1);
@@ -736,7 +799,7 @@ test('Node 服务：四端同步、并发收款、账号锁定、结算不可撤
     await action(0, { type: 'riichi' });
     const firstMatch = room.matchId;
     await action(0, { type: 'end' });
-    await action(1, { type: 'settlement-scores', scores: [10000, 50000, 20000, 20000] }, 400);
+    await action(1, { type: 'settlement-scores', scores: [10000, 50000, 20000, 20000] });
     await action(0, { type: 'settlement-scores', scores: [31000, 23000, 23000, 22000] });
     assert.deepEqual(room.settlement.scores, [32000, 23000, 23000, 22000]);
     assert.equal((await request(mf, '/history', { cookie: players[0].cookie })).body.games, 0);
@@ -772,11 +835,11 @@ test('Node 服务：四端同步、并发收款、账号锁定、结算不可撤
   } finally { sockets.forEach((ws) => ws.close()); await mf.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
-test('退出房间：同步释放座位和转交房主、关闭同账号连接、清除回房状态并保留战绩', async () => {
+test('退出房间：同步释放座位、关闭同账号连接、清除回房状态并保留战绩', async () => {
   const mf = await runtime(), sockets = [];
   try {
     const players = [];
-    for (const name of ['退出房主', '接任房主', '第三位', '第四位']) players.push(await register(mf, name));
+    for (const name of ['退出玩家', '留座玩家', '第三位', '第四位']) players.push(await register(mf, name));
     let room = (await request(mf, '/rooms', { cookie: players[0].cookie, body: {} })).body;
     const code = room.code;
     for (const player of players.slice(1)) room = (await request(mf, `/rooms/${code}/join`, { cookie: player.cookie, method: 'POST' })).body;
@@ -791,7 +854,7 @@ test('退出房间：同步释放座位和转交房主、关闭同账号连接�
     await action({ type: 'confirm-end' });
     const matchId = room.matchId;
     const record = (await request(mf, `/matches/${matchId}`, { cookie: players[0].cookie })).body;
-    const device = await request(mf, '/login', { body: { nickname: '退出房主', password } });
+    const device = await request(mf, '/login', { body: { nickname: '退出玩家', password } });
     for (const cookie of [players[0].cookie, device.cookie, players[1].cookie]) sockets.push(await socket(mf, code, cookie));
     const closed = sockets.slice(0, 2).map((ws) => new Promise((resolve) => ws.addEventListener('close', resolve, { once: true })));
     const updated = message(sockets[2], (r) => r.players?.length === 3);
@@ -799,7 +862,7 @@ test('退出房间：同步释放座位和转交房主、关闭同账号连接�
     assert.deepEqual((await Promise.all(closed)).map((event) => event.code), [4002, 4002]);
     sockets.splice(0, 2);
     room = await updated;
-    assert.equal(room.hostId, players[1].body.user.id);
+    assert.equal(Object.hasOwn(room, 'hostId'), false);
     assert.deepEqual(room.players.map((p) => [p.id, p.seat]), players.slice(1).map((p, seat) => [p.body.user.id, seat + 1]));
     assert.equal(room.state.status, 'waiting'); assert.equal(room.canUndo, false);
     const session = (await request(mf, '/session', { cookie: device.cookie })).body;
@@ -810,7 +873,7 @@ test('退出房间：同步释放座位和转交房主、关闭同账号连接�
     assert.deepEqual((await request(mf, `/matches/${matchId}`, { cookie: players[0].cookie })).body, record);
     assert.equal((await request(mf, '/history', { cookie: players[0].cookie })).body.games, 1);
     room = (await request(mf, `/rooms/${code}/join`, { cookie: players[0].cookie, method: 'POST' })).body;
-    assert.equal(room.players[0].id, players[0].body.user.id); assert.equal(room.hostId, players[1].body.user.id);
+    assert.equal(room.players[0].id, players[0].body.user.id); assert.equal(Object.hasOwn(room, 'hostId'), false);
     assert.deepEqual((await request(mf, `/matches/${matchId}`, { cookie: players[0].cookie })).body, record);
   } finally { sockets.forEach((ws) => ws.close()); await mf.close(); }
 });

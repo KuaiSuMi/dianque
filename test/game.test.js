@@ -17,6 +17,66 @@ function ron(r, from, to, amount) { act(r, from, { type: 'propose', mode: 'ron',
 function conserved(r) { assert.equal(stateOf(r).scores.reduce((a, b) => a + b) + stateOf(r).pot * 1000, 100000); }
 function finish(r) { act(r, 0, { type: 'end' }); act(r, 0, { type: 'confirm-end' }); }
 
+for (const count of [3, 4]) test(`${count} 人无房主：每个座位均可设置、选座、开局、改场况和结算`, () => {
+  for (let actor = 0; actor < count; actor++) {
+    const r = newRoom('TEST', { id: 'p0', name: '玩家0', seat: 0 }, { startPoints: 25000, startDealer: 0, length: 'south' }, count);
+    for (let i = 1; i < count; i++) joinRoom(r, { id: `p${i}`, name: `玩家${i}` });
+    assert.equal(Object.hasOwn(publicRoom(r), 'hostId'), false);
+    act(r, actor, { type: 'configure', playerCount: count, startPoints: 30000, length: 'east' });
+    act(r, actor, { type: 'shuffle' });
+    act(r, actor, { type: 'start' });
+    const before = structuredClone(stateOf(r));
+    const scores = Array(count).fill(30000);
+    act(r, actor, { type: 'adjust', hand: 2, honba: 3, pot: 1, scores });
+    const entry = publicRoom(r).events.at(-1);
+    assert.equal(entry.seat, r.players.find((p) => p.id === `p${actor}`).seat);
+    assert.deepEqual(entry.before, { hand: 0, honba: 0, pot: 0, scores: before.scores });
+    assert.deepEqual(entry.after, { hand: 2, honba: 3, pot: 1, scores });
+    act(r, actor, { type: 'end' });
+    act(r, actor, { type: 'settlement-scores', scores });
+    act(r, actor, { type: 'undo' });
+    act(r, actor, { type: 'undo' });
+    assert.equal(stateOf(r).status, 'playing');
+    act(r, actor, { type: 'redo' });
+    act(r, actor, { type: 'redo' });
+    act(r, actor, { type: 'confirm-end' });
+    assert.equal(stateOf(r).status, 'ended');
+    assert.equal(publicRoom(r).events.some((e) => e.id === entry.id), true);
+  }
+});
+
+for (const count of [3, 4]) test(`${count} 人均可删除待确认对战，全桌重置且无法撤销恢复，保留其他场次`, () => {
+  for (let actor = 0; actor < count; actor++) {
+    const r = room(count, { autoDice: true });
+    finish(r); act(r, actor, { type: 'start' });
+    const archived = structuredClone(r.matches), matchId = r.matchId;
+    assert.throws(() => act(r, actor, { type: 'discard-match' }), /结算界面/);
+    act(r, actor, { type: 'riichi' }); act(r, actor, { type: 'end' });
+    const revision = r.revision;
+    act(r, (actor + 1) % count, { type: 'settlement-scores', scores: Array(count).fill(26000) });
+    assert.throws(() => act(r, actor, { type: 'discard-match', revision }), /更新/);
+    const deletion = { type: 'discard-match', requestId: 'discard-once', revision: r.revision };
+    assert.throws(() => applyAction(r, 'outsider', deletion), /不在/);
+    act(r, actor, deletion);
+    assert.equal(stateOf(r).status, 'waiting');
+    assert.notEqual(r.matchId, matchId);
+    assert.deepEqual(stateOf(r).scores, Array(count).fill(25000));
+    assert.deepEqual(stateOf(r).riichi, Array(count).fill(false));
+    assert.equal(stateOf(r).pot, 0); assert.equal(stateOf(r).hand, 0); assert.equal(stateOf(r).honba, 0);
+    assert.equal(stateOf(r).dice, undefined);
+    assert.equal(publicRoom(r).canUndo, false); assert.equal(publicRoom(r).canRedo, false);
+    assert.deepEqual(publicRoom(r).events, []); assert.deepEqual(r.matches, archived);
+    assert.throws(() => act(r, actor, { type: 'undo' }), /未开始/);
+    act(r, actor, { type: 'start' });
+    const next = structuredClone(r);
+    assert.equal(act(r, actor, deletion), false); assert.deepEqual(r, next);
+    assert.throws(() => act(r, actor, { type: 'discard-match', revision }), /更新/);
+    assert.throws(() => act(r, actor, { type: 'undo' }), /没有可撤销/);
+    finish(r);
+    assert.throws(() => act(r, actor, { type: 'discard-match' }), /结算界面/);
+  }
+});
+
 for (const count of [3, 4]) test(`${count} 人默认自摸仅赢家确认，其他人不能付款确认或取消，重复收款不重复结算`, () => {
   const r = room(count);
   assert.equal(r.config.tsumoConfirm, false); assert.equal(r.config.autoDice, false);
@@ -113,7 +173,6 @@ for (const count of [3, 4]) test(`${count} 人牌桌开关全员可改，不改�
   assert.equal(stateOf(r).status, 'waiting');
   act(r, count - 1, { type: 'table-settings', tsumoConfirm: false, autoDice: false });
   assert.equal(r.config.autoDice, false); assert.equal(r.config.tsumoConfirm, false);
-  assert.throws(() => act(r, 1, { type: 'configure', startPoints: 35000, length: 'east', playerCount: count }), /房主/);
 });
 
 for (const count of [3, 4]) test(`${count} 人对方支付：收款方可发起，付款人先确认，拒绝、幂等和撤销保留正确分数`, () => {
@@ -141,7 +200,7 @@ for (const count of [3, 4]) test(`${count} 人对方支付：收款方可发起�
   act(r, 0, { type: 'redo' }); assert.equal(stateOf(r).scores[1], 28900);
 });
 
-for (const count of [3, 4]) test(`${count} 人结算先预览供托，房主确认后给第一名且不可撤销`, () => {
+for (const count of [3, 4]) test(`${count} 人结算先预览供托，任意玩家确认后给第一名且不可撤销`, () => {
   const r = room(count);
   act(r, 0, { type: 'riichi' });
   const before = structuredClone(stateOf(r));
@@ -150,8 +209,6 @@ for (const count of [3, 4]) test(`${count} 人结算先预览供托，房主确�
   assert.deepEqual(stateOf(r).scores, before.scores); assert.equal(stateOf(r).pot, 1);
   const preview = publicRoom(r).settlement;
   assert.equal(preview.potWinner, 1); assert.equal(preview.scores[1], 26000);
-  assert.throws(() => act(r, 1, { type: 'confirm-end' }), /房主/);
-  assert.throws(() => act(r, 1, { type: 'undo' }), /房主/);
   const confirm = { type: 'confirm-end', requestId: 'confirm-final-once', revision: r.revision };
   act(r, 0, confirm);
   assert.equal(stateOf(r).status, 'ended'); assert.equal(stateOf(r).pot, 0);
@@ -167,11 +224,10 @@ for (const count of [3, 4]) test(`${count} 人结算先预览供托，房主确�
   assert.equal(stateOf(r).scores.reduce((sum, value) => sum + value), count * 25000);
 });
 
-test('结算修改分数后重新确定供托归属，校验权限、输入与过期版本', () => {
+test('结算修改分数后重新确定供托归属，校验输入与过期版本', () => {
   const r = room(); act(r, 0, { type: 'riichi' }); act(r, 0, { type: 'end' });
   const oldRevision = r.revision, before = structuredClone(r);
   const scores = [31000, 23000, 23000, 22000];
-  assert.throws(() => act(r, 1, { type: 'settlement-scores', scores }), /房主/);
   for (const invalid of [[25000], [1, 25000, 25000, 24999], [NaN, 0, 0, 0], [1000100, 0, 0, 0]]) {
     assert.throws(() => act(r, 0, { type: 'settlement-scores', scores: invalid }), /点数/); assert.deepEqual(r, before);
   }
@@ -187,12 +243,11 @@ test('结算修改分数后重新确定供托归属，校验权限、输入与�
   assert.deepEqual(r.matches[0].state.scores, [32000, 23000, 23000, 22000]);
 });
 
-test('结算期间禁止开局、改规则、支付和流局，房主可撤销回到对局', () => {
+test('结算期间禁止开局、改规则、支付和流局，所有人可撤销回到对局', () => {
   const r = room(); act(r, 0, { type: 'end' });
   assert.equal(publicRoom(r).settlement.potWinner, null);
   for (const action of [{ type: 'start' }, { type: 'shuffle' }, { type: 'configure', playerCount: 4, startPoints: 25000, length: 'south' }, { type: 'riichi' }, { type: 'draw', tenpai: true }, { type: 'propose', mode: 'ron', transfers: [{ from: 0, to: 1, amount: 1000 }] }]) assert.throws(() => act(r, 0, action));
   act(r, 0, { type: 'undo' }); assert.equal(stateOf(r).status, 'playing');
-  assert.throws(() => act(r, 1, { type: 'redo' }), /房主/);
   assert.throws(() => act(r, 0, { type: 'settlement-scores', scores: [25000, 25000, 25000, 25000] }), /不在对战结算/);
   act(r, 0, { type: 'redo' }); act(r, 0, { type: 'confirm-end' });
   assert.deepEqual(stateOf(r).scores, [25000, 25000, 25000, 25000]);
@@ -206,11 +261,10 @@ test('有支付或流局投票时不能进入结束结算', () => {
   assert.throws(() => act(r, 0, { type: 'end' }), /完成或取消/);
 });
 
-test('房间规则仅房主在大厅修改，三人容量与起始点数同步生效', () => {
+test('房间规则由玩家在大厅修改，三人容量与起始点数同步生效', () => {
   const r = newRoom('TEST', { id: 'p0', name: '甲', seat: 0 }, { startPoints: 25000, startDealer: 0, length: 'south' });
   joinRoom(r, { id: 'p1', name: '乙' });
   const config = { type: 'configure', startPoints: 35000, length: 'east', playerCount: 3 };
-  assert.throws(() => act(r, 1, config), /房主/);
   const before = structuredClone(r);
   for (const invalid of [{ startPoints: 25100.5 }, { startPoints: 900 }, { startPoints: 1000100 }, { playerCount: 2 }, { playerCount: '3' }, { length: 'west' }]) {
     assert.throws(() => act(r, 0, { ...config, ...invalid }));
@@ -283,18 +337,18 @@ for (const readyCount of [0, 1, 2, 3]) test(`三人流局 ${readyCount} 家听�
   assert.notEqual(stateOf(r).roundId, oldRound); assert.deepEqual(r.drawVotes, {});
 });
 
-test('房主场况修改有校验、流水及撤销重做，同局保留立直，换局清除立直', () => {
+test('场况修改有校验、流水及撤销重做，同局保留立直，换局清除立直', () => {
   const r = room(); act(r, 1, { type: 'riichi' });
   const original = structuredClone(stateOf(r));
   const adjustment = { type: 'adjust', hand: 0, honba: 2, pot: 2, scores: [-1000, 34000, 35000, 30000] };
-  assert.throws(() => act(r, 1, adjustment), /房主/);
   const unchanged = structuredClone(r);
   for (const invalid of [{ hand: 16 }, { hand: -1 }, { honba: 1.5 }, { pot: 100 }, { scores: [0, 0, 0] }, { scores: [10001, 20000, 30000, 40000] }]) {
     assert.throws(() => act(r, 0, { ...adjustment, ...invalid })); assert.deepEqual(r, unchanged);
   }
-  act(r, 0, adjustment);
+  act(r, 1, adjustment);
   assert.deepEqual(stateOf(r).scores, adjustment.scores);
   assert.equal(stateOf(r).riichi[1], true);
+  assert.equal(r.history.at(-1).entry.seat, 1);
   assert.deepEqual(r.history.at(-1).entry.before.scores, original.scores);
   assert.deepEqual(r.history.at(-1).entry.after.scores, adjustment.scores);
   assert.throws(() => act(r, 1, { type: 'draw', tenpai: true, roundId: original.roundId }), /局数已改变/);
@@ -318,11 +372,10 @@ test('场况修改拒绝过期编辑、待确认支付与流局投票', () => {
   assert.throws(() => act(r, 0, adjustment), /完成或取消/);
 });
 
-test('四人到齐且房主确认才能开局，不能加入已开局房间', () => {
+test('四人到齐且任意玩家确认才能开局，不能加入已开局房间', () => {
   const r = newRoom('ABCD', { id: 'p0', name: '甲', seat: 0 }, { startPoints: 25000, startDealer: 2, length: 'east' });
   assert.throws(() => act(r, 0, { type: 'start' }), /四人/);
   for (let i = 1; i < 4; i++) joinRoom(r, { id: `p${i}`, name: '乙' });
-  assert.throws(() => act(r, 1, { type: 'start' }), /房主/);
   act(r, 0, { type: 'start' }); assert.equal(dealerOf(r), 2);
   assert.throws(() => joinRoom(r, { id: 'p5' }), /已经开始/);
 });
@@ -408,30 +461,29 @@ test('重复请求不重复扣点，过时版本不覆盖当前状态', () => {
   assert.equal(applyAction(r, 'p0', action), false); assert.equal(r.revision, revision); assert.equal(stateOf(r).pot, 1);
   assert.throws(() => act(r, 1, { type: 'riichi', revision: 0 }), /更新/); conserved(r);
 });
-test('东四局换南一局；对战结束须房主确认且不可撤销', () => {
+test('东四局换南一局；对战结束须任意玩家确认且不可撤销', () => {
   const r = room(); for (let i = 0; i < 4; i++) ron(r, i, (i + 1) % 4, 1000);
   assert.equal(publicRoom(r).label, '南 1 局'); assert.equal(dealerOf(r), 0);
-  assert.throws(() => act(r, 1, { type: 'end' }), /房主/);
   finish(r); assert.equal(stateOf(r).status, 'ended');
   assert.throws(() => act(r, 0, { type: 'riichi' }), /对局中/);
   assert.throws(() => act(r, 0, { type: 'undo' }), /结算已确认/); conserved(r);
 });
 
-test('大厅退出释放座位、按座位顺序转交房主，空房间可重新入座', () => {
+test('大厅退出释放座位，空房间可重新入座', () => {
   const r = newRoom('TEST', { id: 'p0', name: '甲', seat: 0 }, { startPoints: 25000, startDealer: 2, length: 'south' });
   for (let i = 1; i < 4; i++) joinRoom(r, { id: `p${i}`, name: `玩家${i}` });
   leaveRoom(r, 'p1');
-  assert.equal(r.hostId, 'p0');
+  assert.equal(Object.hasOwn(r, 'hostId'), false);
   assert.deepEqual(r.players.map((p) => [p.id, p.seat]), [['p0', 0], ['p2', 2], ['p3', 3]]);
   assert.equal(r.config.startDealer, 2);
   leaveRoom(r, 'p0');
-  assert.equal(r.hostId, 'p2'); assert.equal(r.config.startDealer, 2);
+  assert.equal(Object.hasOwn(r, 'hostId'), false); assert.equal(r.config.startDealer, 2);
   assert.throws(() => act(r, 0, { type: 'configure', startPoints: 35000, playerCount: 3, length: 'east' }), /不在/);
   act(r, 2, { type: 'configure', startPoints: 35000, playerCount: 3, length: 'east' });
   leaveRoom(r, 'p2'); leaveRoom(r, 'p3');
-  assert.equal(r.hostId, null); assert.deepEqual(r.players, []);
+  assert.equal(Object.hasOwn(r, 'hostId'), false); assert.deepEqual(r.players, []);
   joinRoom(r, { id: 'p4', name: '新人' });
-  assert.equal(r.hostId, 'p4'); assert.equal(r.players[0].seat, 0);
+  assert.equal(Object.hasOwn(r, 'hostId'), false); assert.equal(r.players[0].seat, 0);
 });
 
 test('对局和结算期间不能退出，确认后退出保留完整成绩并允许补位', () => {
@@ -444,7 +496,7 @@ test('对局和结算期间不能退出，确认后退出保留完整成绩并�
   act(r, 0, { type: 'confirm-end' });
   const ended = structuredClone(publicRoom(r));
   leaveRoom(r, 'p0');
-  assert.equal(stateOf(r).status, 'waiting'); assert.equal(r.hostId, 'p1');
+  assert.equal(stateOf(r).status, 'waiting'); assert.equal(Object.hasOwn(r, 'hostId'), false);
   assert.deepEqual(r.matches[0].state, ended.state);
   assert.deepEqual(r.matches[0].players, ended.players.map(({ id, name, seat }) => ({ id, name, seat })));
   assert.deepEqual(r.matches[0].events, ended.events);
@@ -464,7 +516,6 @@ test('同房间连续开局重置点数和局况，保留当场记录且不能�
   act(r, 3, { type: 'riichi' });
   finish(r);
   const ended = structuredClone(publicRoom(r));
-  assert.throws(() => act(r, 1, { type: 'start' }), /房主/);
   act(r, 0, { type: 'start' });
   assert.equal(r.code, ended.code);
   assert.deepEqual(r.players.map((p) => p.id), ended.players.map((p) => p.id));
@@ -486,11 +537,10 @@ test('同房间连续开局重置点数和局况，保留当场记录且不能�
   assert.equal(JSON.stringify(publicRoom(r)).includes('tokenHash'), false);
 });
 
-test('随机选座仅房主在四人大厅可用，保持身份和历史，按新座位记分', () => {
+test('随机选座在四人大厅可用，保持身份和历史，按新座位记分', () => {
   const r = newRoom('ABCD', { id: 'p0', name: '东家', seat: 0, tokenHash: 'private0' }, { startPoints: 25000, startDealer: 0, length: 'south' });
   assert.throws(() => act(r, 0, { type: 'shuffle' }), /四人/);
   for (let i = 1; i < 4; i++) joinRoom(r, { id: `p${i}`, name: `玩家${i}`, tokenHash: `private${i}` });
-  assert.throws(() => act(r, 1, { type: 'shuffle' }), /房主/);
   act(r, 0, { type: 'shuffle' });
   assert.equal(stateOf(r).status, 'waiting');
   act(r, 0, { type: 'start' });
@@ -499,7 +549,7 @@ test('随机选座仅房主在四人大厅可用，保持身份和历史，按�
   const ended = structuredClone(publicRoom(r));
   act(r, 0, { type: 'shuffle' });
   assert.equal(stateOf(r).status, 'waiting');
-  assert.equal(r.hostId, 'p0');
+  assert.equal(Object.hasOwn(r, 'hostId'), false);
   assert.deepEqual(r.players.map((p) => p.id).sort(), ['p0', 'p1', 'p2', 'p3']);
   r.players.forEach((p, index) => { assert.equal(p.seat, index); assert.equal(p.tokenHash, `private${p.id.slice(1)}`); });
   assert.deepEqual(r.matches[0].players, ended.players.map(({ id, name, seat }) => ({ id, name, seat })));

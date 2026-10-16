@@ -42,7 +42,7 @@ export function newRoom(code, player, config, count = 4) {
   checkConfig(config, count);
   check(Number.isInteger(config.startDealer) && config.startDealer >= 0 && config.startDealer < count, '起庄位置无效');
   const state = initialState(config, count);
-  return { code, matchId: randomUUID(), createdAt: new Date().toISOString(), hostId: player.id, players: [player], config, revision: 0, cursor: 0, history: [{ state, entry: null }], pending: null, drawVotes: {}, receipts: [] };
+  return { code, matchId: randomUUID(), createdAt: new Date().toISOString(), players: [player], config, revision: 0, cursor: 0, history: [{ state, entry: null }], pending: null, drawVotes: {}, receipts: [] };
 }
 
 export function joinRoom(room, player) {
@@ -52,7 +52,6 @@ export function joinRoom(room, player) {
   player.seat = Array.from({ length: stateOf(room).scores.length }, (_, seat) => seat).find((seat) => !room.players.some((p) => p.seat === seat));
   room.players.push(player);
   room.players.sort((a, b) => a.seat - b.seat);
-  if (!room.hostId) room.hostId = player.id;
   room.revision++;
 }
 
@@ -62,7 +61,6 @@ export function leaveRoom(room, actorId) {
   check(index >= 0, '你不在这个房间');
   prepareNextMatch(room);
   room.players.splice(index, 1);
-  if (room.hostId === actorId) room.hostId = room.players[0]?.id ?? null;
   room.revision++;
 }
 
@@ -83,8 +81,12 @@ export function prepareNextMatch(room) {
   const { state, players, events, config } = publicRoom(room);
   const match = { id: room.matchId, code: room.code, endedAt: room.history[room.cursor].entry.at, state, players: players.map(({ id, name, seat }) => ({ id, name, seat })), events, config };
   room.matches = [...(room.matches || []), clone(match)];
+  resetMatch(room);
+}
+
+function resetMatch(room) {
   room.matchId = randomUUID();
-  room.history = [{ state: initialState(room.config, state.scores.length), entry: null }];
+  room.history = [{ state: initialState(room.config, stateOf(room).scores.length), entry: null }];
   room.cursor = 0;
   room.pending = null;
   room.drawVotes = {};
@@ -133,7 +135,6 @@ export function applyAction(room, actorId, action) {
   else check(action.revision === room.revision, '牌局有更新，请查看最新状态后重试');
 
   if (action.type === 'configure') {
-    check(player.id === room.hostId, '只有房主可以修改房间规则');
     check(['waiting', 'ended'].includes(state.status), '只能在房间大厅修改规则');
     checkConfig(action, action.playerCount);
     check(room.players.length <= action.playerCount, '已有四人入座，不能改为三人模式');
@@ -153,7 +154,6 @@ export function applyAction(room, actorId, action) {
     room.config.tsumoConfirm = action.tsumoConfirm;
     room.config.autoDice = action.autoDice;
   } else if (action.type === 'start') {
-    check(player.id === room.hostId, '只有房主可以开局');
     check(['waiting', 'ended'].includes(state.status) && room.players.length === count, `${count === 3 ? '三' : '四'}人入座后才能开局`);
     prepareNextMatch(room);
     state = clone(stateOf(room));
@@ -168,7 +168,6 @@ export function applyAction(room, actorId, action) {
     player.seat = action.seat;
     room.players.sort((a, b) => a.seat - b.seat);
   } else if (action.type === 'shuffle') {
-    check(player.id === room.hostId, '只有房主可以随机选座');
     check(['waiting', 'ended'].includes(state.status), '只能在房间大厅随机选座');
     check(room.players.length === count, `${count === 3 ? '三' : '四'}人入座后才能随机选座`);
     prepareNextMatch(room);
@@ -181,8 +180,6 @@ export function applyAction(room, actorId, action) {
     check(state.status !== 'ended', '结算已确认，不能撤销或重做');
     check(state.status !== 'waiting', '牌局还未开始');
     check(!room.pending && Object.keys(room.drawVotes).length === 0, '请先取消待确认的结算或流局申请');
-    const target = room.history[room.cursor + (action.type === 'undo' ? -1 : 1)]?.state;
-    if ([state.status, target?.status].includes('settling')) check(player.id === room.hostId, '只有房主可以撤销或重做对战结算');
     if (action.type === 'undo') {
       check(room.cursor > 1, '没有可撤销的操作');
       room.cursor--;
@@ -191,8 +188,10 @@ export function applyAction(room, actorId, action) {
       room.cursor++;
     }
     stateOf(room).roundId = randomUUID();
+  } else if (action.type === 'discard-match') {
+    check(state.status === 'settling', '只能在对战结算界面删除本局记录');
+    resetMatch(room);
   } else if (action.type === 'settlement-scores' || action.type === 'confirm-end') {
-    check(player.id === room.hostId, '只有房主可以修改或确认对战结算');
     check(state.status === 'settling', '当前不在对战结算中');
     if (action.type === 'settlement-scores') {
       checkScores(action.scores, count);
@@ -208,7 +207,6 @@ export function applyAction(room, actorId, action) {
   } else {
     check(state.status === 'playing', '当前不在对局中');
     if (action.type === 'adjust') {
-      check(player.id === room.hostId, '只有房主可以修改当前场况');
       check(!room.pending && Object.keys(room.drawVotes).length === 0, '请先完成或取消当前结算');
       check(Number.isInteger(action.hand) && action.hand >= 0 && action.hand < count * 4, '局数无效');
       check(Number.isInteger(action.honba) && action.honba >= 0 && action.honba <= 99, '本场须为 0～99');
@@ -217,7 +215,7 @@ export function applyAction(room, actorId, action) {
       const before = { hand: state.hand, honba: state.honba, pot: state.pot, scores: [...state.scores] };
       if (state.hand !== action.hand) state.riichi.fill(false);
       Object.assign(state, { hand: action.hand, honba: action.honba, pot: action.pot, scores: [...action.scores], roundId: randomUUID() });
-      commit(room, state, { type: 'adjust', label: '场况调整', before, after: { hand: state.hand, honba: state.honba, pot: state.pot, scores: [...state.scores] } });
+      commit(room, state, { type: 'adjust', seat, label: '场况调整', before, after: { hand: state.hand, honba: state.honba, pot: state.pot, scores: [...state.scores] } });
     } else if (action.type === 'riichi') {
       check(!room.pending && Object.keys(room.drawVotes).length === 0, '请先完成当前结算');
       check(!state.riichi[seat], '本局已经立直');
@@ -276,7 +274,6 @@ export function applyAction(room, actorId, action) {
         commit(room, state, entry);
       }
     } else if (action.type === 'end') {
-      check(player.id === room.hostId, '只有房主可以结束对战');
       check(!room.pending && Object.keys(room.drawVotes).length === 0, '请先完成或取消当前结算');
       Object.assign(state, { status: 'settling', roundId: randomUUID() });
       commit(room, state, { type: 'settlement', label: '进入对战结算' });
@@ -291,7 +288,7 @@ export function applyAction(room, actorId, action) {
 export function publicRoom(room, online = []) {
   const state = stateOf(room);
   return {
-    code: room.code, matchId: room.matchId, createdAt: room.createdAt, hostId: room.hostId, config: { ...room.config, playerCount: state.scores.length }, matches: room.matches || [],
+    code: room.code, matchId: room.matchId, createdAt: room.createdAt, config: { ...room.config, playerCount: state.scores.length }, matches: room.matches || [],
     revision: room.revision, state, dealer: dealerOf(room), label: handLabel(state),
     settlement: state.status === 'settling' ? finalResult(state) : null,
     players: room.players.map(({ id, name, seat }) => ({ id, name, seat, online: online.includes(id) })),

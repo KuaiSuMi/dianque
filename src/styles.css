@@ -113,7 +113,6 @@ svg { flex-shrink: 0; }
 .self-top .wind-chip { width: 46px; height: 46px; font-size: 30px; font-weight: 650; border-radius: 12px; }
 .self-name { min-width: 0; overflow-wrap: anywhere;font-size:14px;font-weight:600; }
 .self-name > small { color: var(--muted); margin-left: 7px; font-size: 11px; }
-.host-badge { display: inline-block; margin-left: 5px; padding: 1px 5px; border-radius: 5px; background: var(--mint-soft); color: var(--mint); font-size: 11px; font-weight: 500; line-height: 18px; vertical-align: middle; white-space: nowrap; }
 .start-marker { display: flex; align-items: center; gap: 4px; color: var(--amber); font-size: 11px; white-space: nowrap; }
 .self-rank { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .self-score { display: flex; justify-content: center; gap: 12px; align-items: flex-end;padding:22px 0 17px; }
@@ -221,7 +220,6 @@ svg { flex-shrink: 0; }
 .settlement-player { min-width: 0; overflow-wrap: anywhere; }
 .settlement-player > small { display: block; color: var(--muted); font-size: 11px; margin-top: 4px; }
 .settlement-actions { display: grid; gap: 12px; }
-.settlement-wait { text-align: center; color: var(--muted); font-size: 14px; padding: 16px 0; }
 .settlement-page .waiting-tools { margin-top: 16px; }
 .records-heading { font-size: 15px; margin-top: 30px; }
 .settings-actions { display:grid; gap:12px; margin-bottom:16px; }
