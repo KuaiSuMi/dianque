@@ -62,10 +62,12 @@ svg { flex-shrink: 0; }
 .seat-2 { color: light-dark(#466494,#c4d5ef); background: light-dark(#e7edf7,#303e54); }
 .seat-3 { color: light-dark(#92556e,#ecc7da); background: light-dark(#f6e7ed,#4b3040); }
 .avatar-large { width: 56px; height: 56px; font-size: 22px; }
-.riichi-stick { display: inline-flex; width: 57px; height: 9px; background: #efeee4; align-items: center; justify-content: center; border-radius: 2px; border: 1px solid #d1d0c5; flex-shrink: 0; }
+.riichi-stick, .honba-stick { display: inline-flex; width: 57px; height: 9px; background: #efeee4; align-items: center; justify-content: center; border-radius: 2px; border: 1px solid #d1d0c5; flex-shrink: 0; }
 .riichi-stick i { width: 5px; height: 5px; border-radius: 50%; background: #bc4e48; }
 .stick-small { width: 28px; height: 6px; border-radius: 1px; }
 .stick-small i { width: 3px; height: 3px; }
+.honba-stick { display: inline-grid; grid-template-columns: repeat(4, 1.25px); grid-template-rows: repeat(2, 1.25px); gap: 1px 2px; align-content: center; }
+.honba-stick i { width: 1.25px; height: 1.25px; border-radius: 50%; background: #494943; }
 .lobby { min-height: 100dvh; display: flex; flex-direction: column;padding-bottom:max(24px,env(safe-area-inset-bottom)); }
 .entry-panel { background: var(--surface);border:0;border-radius:30px;padding:32px;box-shadow:0 8px 32px light-dark(#22222806,#00000018); }
 .format-field { border: 0; padding: 0; margin: 0 0 24px; min-width: 0; }
@@ -270,7 +272,7 @@ svg { flex-shrink: 0; }
   .mahjong-table { padding: 20px 18px 12px; column-gap:22px; }
   .round-strip { padding: 16px; }
   .round-counter { gap: 7px; }
-  .round-counter .riichi-stick { display: none; }
+  .round-counter > span { flex-direction: column; gap: 4px; }
   .riichi-button > small { display: none; }
   .table-actions { padding-left: 16px; padding-right: 16px; }
   .entry-panel { padding: 24px; }
