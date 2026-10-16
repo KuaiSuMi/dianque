@@ -236,6 +236,9 @@ svg { flex-shrink: 0; }
 .seats-list.seats-3 { grid-template-columns: repeat(3, 1fr); }
 .waiting-seat { border: 1px dashed var(--line); display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 24px 12px;border-radius:26px;background:var(--surface);min-height:196px;justify-content:center; }
 .waiting-seat.taken { border-style: solid; border-color: var(--line); }
+/* Motion owns seat transforms; button press and CSS transitions must not distort its measurements. */
+.waiting-seat { transition: background 140ms var(--ease-out), color 140ms var(--ease-out); }
+.waiting-seat:active:not(:disabled) { transform: none; background: var(--raised); }
 .waiting-seat > strong { font-size: 16px; font-weight: 500; overflow-wrap: anywhere; }
 .waiting-seat > small { font-size: 11px; color: var(--muted); }
 .waiting-actions { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 18px; margin: 36px 0 20px; }
