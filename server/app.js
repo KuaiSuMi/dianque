@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { randomInt, randomUUID } from 'node:crypto';
 import { applyAction, check, GameError, joinRoom, leaveRoom, newRoom, prepareNextMatch, publicRoom, stateOf } from './game.js';
 import { cookie, credentials, nicknameValue, passwordValue, newToken, passwordHash, sessionHash, SESSION_SECONDS, verifyPassword, digest } from './auth.js';
+import { SiteStats } from './stats.js';
 
 const codePattern = /^[A-Z]{4}$/;
 const active = (room) => ['playing', 'settling'].includes(stateOf(room).status);
@@ -42,6 +43,7 @@ export class Dianque {
       CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, nickname_key TEXT UNIQUE NOT NULL, nickname TEXT NOT NULL, salt TEXT NOT NULL, password_hash TEXT NOT NULL, active_room TEXT, last_room TEXT, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS admins (user_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS announcements (id TEXT PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL, published INTEGER NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS announcement_popups (announcement_id TEXT PRIMARY KEY);
       CREATE TABLE IF NOT EXISTS riichi_voices (id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, audio BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS riichi_voice_volumes (voice_id TEXT PRIMARY KEY, volume INTEGER NOT NULL CHECK(volume BETWEEN 0 AND 100));
       CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires_at INTEGER NOT NULL);
@@ -55,6 +57,7 @@ export class Dianque {
       CREATE TABLE IF NOT EXISTS limits (key TEXT PRIMARY KEY, count INTEGER NOT NULL, until INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS limits_expiry ON limits(until);
     `);
+    this.stats = new SiteStats(this);
   }
 
   rows(query, ...args) { return this.db.prepare(query).all(...args); }
@@ -99,6 +102,11 @@ export class Dianque {
   }
   async admin(request, url, body, user) {
     if (!this.isAdmin(user)) fail(403, '仅管理员可使用管理功能');
+    if (url.pathname === '/api/admin/stats' && request.method === 'GET') {
+      const days = Number(url.searchParams.get('days') || 7);
+      check([1, 7, 30].includes(days), '请选择今日、近 7 天或近 30 天');
+      return json(this.stats.overview(days));
+    }
     if (url.pathname.startsWith('/api/admin/announcements')) return this.announcements(request, url, body);
     const matchRoute = url.pathname.match(/^\/api\/admin\/matches\/([a-f0-9-]{36})$/);
     if (matchRoute && request.method === 'DELETE') {
@@ -136,8 +144,8 @@ export class Dianque {
       const offset = Number(url.searchParams.get('offset') || 0);
       check(query.length <= 128 && Number.isSafeInteger(offset) && offset >= 0, '查询条件无效');
       const total = this.one('SELECT COUNT(*) AS n FROM users WHERE instr(nickname_key,?)>0', query).n;
-      const users = this.rows('SELECT id,nickname,created_at FROM users WHERE instr(nickname_key,?)>0 ORDER BY created_at DESC,id LIMIT 20 OFFSET ?', query, offset);
-      return json({ total, users: users.map((row) => ({ ...this.publicUser(row), createdAt: row.created_at })) });
+      const users = this.rows('SELECT id,nickname,created_at,(SELECT COUNT(*) FROM results WHERE user_id=users.id) AS games,(SELECT MAX(last_seen) FROM user_activity WHERE user_id=users.id) AS lastSeen FROM users WHERE instr(nickname_key,?)>0 ORDER BY created_at DESC,id LIMIT 20 OFFSET ?', query, offset);
+      return json({ total, users: users.map((row) => ({ ...this.publicUser(row), createdAt: row.created_at, games: row.games, lastSeen: row.lastSeen })) });
     }
     const route = url.pathname.match(/^\/api\/admin\/users\/([a-f0-9-]{36})(?:\/(role|matches))?$/);
     if (!route) fail(404, '接口不存在');
@@ -171,6 +179,7 @@ export class Dianque {
         this.rows('DELETE FROM admins WHERE user_id=?', target.id);
         this.rows('DELETE FROM members WHERE user_id=?', target.id);
         this.rows('DELETE FROM results WHERE user_id=?', target.id);
+        this.rows('DELETE FROM user_activity WHERE user_id=?', target.id);
         this.clearLoginLimits(target.nickname_key);
         this.rows('DELETE FROM limits WHERE key IN (?,?,?)', `password:${target.id}`, `request:${target.id}`, `admin:${target.id}`);
         this.rows('DELETE FROM users WHERE id=?', target.id);
@@ -224,30 +233,36 @@ export class Dianque {
     return json({ user: updated, signedOut }, 200, signedOut ? { 'Set-Cookie': cookie('', request, 0) } : {});
   }
   announcements(request, url, body) {
-    if (url.pathname === '/api/admin/announcements' && request.method === 'GET') return json(this.rows('SELECT * FROM announcements ORDER BY updated_at DESC,id DESC LIMIT 100'));
+    if (url.pathname === '/api/admin/announcements' && request.method === 'GET') return json(this.rows('SELECT *,EXISTS(SELECT 1 FROM announcement_popups WHERE announcement_id=id) AS popup FROM announcements ORDER BY updated_at DESC,id DESC LIMIT 100'));
     const route = url.pathname.match(/^\/api\/admin\/announcements(?:\/([a-f0-9-]{36}))?$/);
     if (route?.[1] && request.method === 'DELETE') {
       const revision = Number(url.searchParams.get('revision'));
       check(Number.isSafeInteger(revision) && revision > 0, '公告版本无效');
-      const previous = this.one('SELECT revision FROM announcements WHERE id=?', route[1]);
-      if (!previous) fail(404, '公告不存在或已被删除');
-      check(revision === previous.revision, '公告已被修改，请重新打开后再删除');
-      this.rows('DELETE FROM announcements WHERE id=?', route[1]);
+      this.transaction(() => {
+        const previous = this.one('SELECT revision FROM announcements WHERE id=?', route[1]);
+        if (!previous) fail(404, '公告不存在或已被删除');
+        check(revision === previous.revision, '公告已被修改，请重新打开后再删除');
+        this.rows('DELETE FROM announcement_popups WHERE announcement_id=?', route[1]);
+        this.rows('DELETE FROM announcements WHERE id=?', route[1]);
+      });
       return json({ ok: true });
     }
     if (!route || request.method !== 'POST') fail(404, '接口不存在');
-    check(Object.keys(body).every((key) => ['title', 'content', 'published', 'revision'].includes(key)), '公告字段无效');
+    check(Object.keys(body).every((key) => ['title', 'content', 'published', 'popup', 'revision'].includes(key)), '公告字段无效');
     check(typeof body.title === 'string' && body.title.trim().length > 0 && body.title.length <= 80, '公告标题须为 1～80 字');
-    check(typeof body.content === 'string' && body.content.trim().length > 0 && body.content.length <= 3000, '公告正文须为 1～3000 字');
+    check(typeof body.content === 'string' && body.content.length <= 3000, '公告正文不能超过 3000 字');
     check(typeof body.published === 'boolean', '请选择公告发布状态');
+    check(typeof body.popup === 'boolean', '请选择公告弹窗状态');
     const id = route[1] || randomUUID();
     this.transaction(() => {
       const previous = this.one('SELECT revision FROM announcements WHERE id=?', id);
       if (route[1] && !previous) fail(404, '公告不存在');
       check(!previous || body.revision === previous.revision, '公告已被修改，请重新打开');
       this.rows('INSERT INTO announcements VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,content=excluded.content,published=excluded.published,revision=excluded.revision,updated_at=excluded.updated_at', id, body.title.trim(), body.content.trim(), Number(body.published), (previous?.revision || 0) + 1, new Date().toISOString());
+      this.rows('DELETE FROM announcement_popups WHERE announcement_id=?', id);
+      if (body.popup) this.rows('INSERT INTO announcement_popups VALUES (?)', id);
     });
-    return json(this.one('SELECT * FROM announcements WHERE id=?', id), route[1] ? 200 : 201);
+    return json(this.one('SELECT *,EXISTS(SELECT 1 FROM announcement_popups WHERE announcement_id=id) AS popup FROM announcements WHERE id=?', id), route[1] ? 200 : 201);
   }
   room(code, user) {
     check(codePattern.test(code), '房间码为 4 位大写字母');
@@ -306,7 +321,11 @@ export class Dianque {
         if (request.headers.get('Origin') !== url.origin) fail(403, '不允许跨站操作');
       }
       if (path === '/api/health') return json({ ok: true });
-      if (path === '/api/announcements' && method === 'GET') return json(this.rows('SELECT id,title,content,revision,updated_at FROM announcements WHERE published=1 ORDER BY updated_at DESC,id DESC LIMIT 100'));
+      if (path === '/api/announcements' && method === 'GET') {
+        const reader = this.user(request);
+        if (reader) this.stats.activity(reader.id);
+        return json(this.rows('SELECT id,title,content,revision,updated_at,EXISTS(SELECT 1 FROM announcement_popups WHERE announcement_id=id) AS popup FROM announcements WHERE published=1 ORDER BY updated_at DESC,id DESC LIMIT 100'));
+      }
       const body = method === 'POST' && request.body ? await bodyOf(request) : {};
       if (method === 'POST' && ['/api/register', '/api/login'].includes(path)) {
         this.limit(`auth:${ip}`, 30, 15 * 60000, '登录或注册请求过多');
@@ -333,11 +352,13 @@ export class Dianque {
           this.rows('DELETE FROM sessions WHERE expires_at<?', Date.now());
           const token = newToken();
           this.rows('INSERT INTO sessions VALUES (?,?,?)', digest(token), user.id, Date.now() + SESSION_SECONDS * 1000);
+          this.stats.activity(user.id);
           return json(this.session(user), path === '/api/register' ? 201 : 200, { 'Set-Cookie': cookie(token, request) });
         });
       }
       const user = this.user(request);
-      if (path === '/api/session' && method === 'GET') return json(user ? this.session(user) : { user: null });
+      if (user) this.stats.activity(user.id);
+      if (path === '/api/session' && method === 'GET') return json(user ? this.session(user) : { user: null }, 200, this.stats.visit(request));
       if (!user) fail(401, '请先登录');
       this.limit(`request:${user.id}`, 120);
       if (path.startsWith('/api/admin/')) return await this.admin(request, url, body, user);

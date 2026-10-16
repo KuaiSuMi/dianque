@@ -28,6 +28,8 @@
 
 原生 dialog 保留焦点圈定、Esc 和关闭后的焦点恢复。桌面居中，手机为四周留边的底部弹层，长内容可滚动，标题固定。
 
+管理中心默认打开“概览”，沿用分组布局、两列指标和分段选择器，按“今日 / 近 7 天 / 近 30 天”切换，指标下方显示每日访问柱状图；提供加载、失败重试和无访问记录提示。账号详情展示注册时间、最近访问和已结算对局数。公告横幅仅在首页显示；已发布且开启自动弹窗的公告在各页面按公告 ID 记录当前浏览器的已读状态，仅未读时自动弹出，管理中心开启时暂缓。公告正文选填。
+
 支付弹层默认使用常规点数，区分庄家/子家；自摸选一次档位后列出三家应付金额。快捷金额自动加入本场并显示加点明细，多家荣和仅最近赢家获得本场。自定义输入保留逐家填写已含本场的金额。切换方式清空金额，选中快捷按钮有描边及加粗反馈。
 
 简化支付确认在新建房间默认开启；自摸和非自摸支付均由发起者点击“确认结算”后直接落账，不再弹出其他玩家的确认。关闭时先确认付款，再由各收款方确认；付款方发起视为已确认付款。大厅和对局中的开关全桌同步，待确认支付或流局期间锁定。
@@ -49,9 +51,11 @@
 
 ## 实现位置
 
-`src/main.jsx`：业务界面与弹层；`src/payment.js`：快捷档位、本场加点和实付金额；`src/ui.jsx`：页面过渡、分段选择器、开关；`src/styles.css`：语义色、布局和可访问性；`src/vendor/`：Apple-Style 材质及交互资源；`index.html` 和 PWA manifest：主题色。
+`src/main.jsx`：业务界面、公告展示与弹层；`src/admin.jsx`：管理中心、账号详情与公告编辑；`src/admin-stats.jsx`：概览指标与访问图表；`src/announcements.js`：公告已读状态；`src/payment.js`：快捷档位、本场加点和实付金额；`src/ui.jsx`：页面过渡、分段选择器、开关；`src/styles.css`：语义色、布局和可访问性；`src/vendor/`：Apple-Style 材质及交互资源；`index.html` 和 PWA manifest：主题色。
 
 ## 验证
+
+概览与公告更新：设计审查结论为 ship。截图为 `.impeccable/review/stats/desktop.png`、`.impeccable/review/stats/mobile.png`、`.impeccable/review/stats/small-mobile.png` 和 `.impeccable/review/stats/mobile-chart.png`。
 
 支付分区与高度过渡更新：生产构建通过。浏览器核验双响番符分别归属各自金额区、自摸仅显示赢家番符、常规/自定义切换、连续勾选与取消、空金额校验。采样确认正常模式有连续中间高度，减少动态效果时直接到目标高度；320px 深色无横向溢出。截图为 `.impeccable/review/multi-winner-patterns-mobile.png`，采样为 `.impeccable/review/payment-animation-checks.json`。计分函数和服务端未改，未重复后端测试；未做真机测试。
 

@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { api } from './api';
+import { unreadAnnouncements, rememberAnnouncements } from './announcements';
 import { useRoom } from './useRoom';
 import { AuthForm, AccountHistory, ChangePasswordForm } from './account';
 import { AdminEntry, AdminUsers } from './admin';
@@ -104,18 +105,20 @@ function RoomRulesFields({ points, setPoints, length, setLength, count, setCount
   </>;
 }
 
-function Announcements({ adminOpen = false }) {
+function Announcements({ adminOpen = false, banner = true }) {
   const [items, setItems] = useState([]);
-  const [show, setShow] = useState(false);
-  const read = useRef('');
+  const [opened, setOpened] = useState([]);
+  const visible = items.filter((item) => opened.includes(item.id));
+  useEffect(() => { if (!adminOpen) rememberAnnouncements(visible); }, [items, opened, adminOpen]);
   useEffect(() => {
     if (adminOpen) return;
     const abort = new AbortController();
-    try { read.current = sessionStorage.getItem('announcements-read') || read.current; } catch { /* 禁用存储时保留本页已读状态。 */ }
     function load() {
       api('/announcements', { signal: abort.signal }).then((next) => {
+        if (abort.signal.aborted) return;
         setItems(next);
-        if (next.length && next.map((item) => `${item.id}:${item.revision}`).join(',') !== read.current) setShow(true);
+        const unread = unreadAnnouncements(next);
+        if (unread.length) setOpened((current) => [...new Set([...current, ...unread.map((item) => item.id)])]);
       }).catch(() => {});
     }
     const refresh = () => { if (document.visibilityState === 'visible') load(); };
@@ -123,13 +126,9 @@ function Announcements({ adminOpen = false }) {
     load(); window.addEventListener('focus', refresh); document.addEventListener('visibilitychange', refresh);
     return () => { abort.abort(); clearInterval(timer); window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', refresh); };
   }, [adminOpen]);
-  function close() {
-    setShow(false);
-    read.current = items.map((item) => `${item.id}:${item.revision}`).join(',');
-    try { sessionStorage.setItem('announcements-read', read.current); } catch { /* 禁用存储时保留本页已读状态。 */ }
-  }
+  const close = () => setOpened([]);
   if (!items.length) return null;
-  return <><button className="announcement-banner" onClick={() => setShow(true)}><Info size={17} /><span>{items[0].title}</span><ChevronRight size={17} /></button><AnimatePresence>{show && !adminOpen && <Sheet title="公告" top close={close}>{items.map((item) => <article className="announcement" key={item.id}><h3>{item.title}</h3><time>{new Date(item.updated_at).toLocaleDateString('zh-CN')}</time><p>{item.content}</p></article>)}<Button className="primary full" onClick={close}>知道了</Button></Sheet>}</AnimatePresence></>;
+  return <>{banner && <button className="announcement-banner" onClick={() => setOpened(items.map((item) => item.id))}><Info size={17} /><span>{items[0].title}</span><ChevronRight size={17} /></button>}<AnimatePresence>{visible.length > 0 && !adminOpen && <Sheet title="公告" top close={close}>{visible.map((item) => <article className="announcement" key={item.id}><h3>{item.title}</h3><time>{new Date(item.updated_at).toLocaleDateString('zh-CN')}</time>{item.content && <p>{item.content}</p>}</article>)}<Button className="primary full" onClick={close}>知道了</Button></Sheet>}</AnimatePresence></>;
 }
 
 function Lobby({ user, onEnter, notify, openAccount, openAdmin, adminOpen }) {
@@ -440,7 +439,7 @@ function Table({ room, me, act, pendingAction, connected, notify, home, openAdmi
   }
   return <main className="table-page page"><header className="app-header"><Logo /><div className="header-room">{['waiting', 'ended'].includes(current.status) && <button className="text-button" disabled={pendingAction === 'leave'} aria-busy={pendingAction === 'leave' || undefined} onClick={home} aria-label="退出房间" title="退出房间"><Home size={17} /></button>}<button className="text-button" onClick={() => setSheet('share')}>房间 {room.code}<Share2 size={15} /></button><span className={`network ${connected ? 'connected' : ''}`}>{connected ? <Wifi size={14} /> : <WifiOff size={14} />}<span>{connected ? '已同步' : '重连中'}</span></span></div></header>
     {['waiting', 'ended'].includes(current.status) && <AdminEntry open={openAdmin} />}
-    <Announcements adminOpen={adminOpen} />
+    <Announcements adminOpen={adminOpen} banner={false} />
     {!connected && <div role="status" className="offline-banner">连接中断，重连前暂停操作。</div>}
     {current.status === 'settling' ? <Settlement room={room} me={me} act={act} busy={locked} pendingAction={pendingAction} edit={() => setSheet('settlement-scores')} discard={() => setSheet('discard-match')} records={() => setSheet('records')} undo={() => setSheet('undo')} redo={() => setSheet('redo')} /> : current.status !== 'playing' ? <WaitingRoom room={room} me={me} act={act} busy={locked} pendingAction={pendingAction} share={() => setSheet('share')} records={() => setSheet('records')} configure={() => setSheet('configure')} settings={() => setSheet('settings')} changePassword={changePassword} /> : <>
       <div className="table-toolbar"><div><span>{count === 3 ? '三人' : '四人'}{room.config.length === 'south' ? '南' : '东'}</span><button className="text-button end-game-button" disabled={locked || pending || pendingAction === 'end'} aria-busy={pendingAction === 'end' || undefined} onClick={() => act({ type: 'end' })}>结束对战</button></div><div className="history-buttons as-glass as-glass-group" data-adapt="off" data-lens="off"><button className="as-item" aria-label="撤销上一步" title="撤销上一步" disabled={locked || !room.canUndo || pending} onClick={() => setSheet('undo')}><Undo2 size={18} /><span>撤销</span></button><button className="as-item" aria-label="重做上一步" title="重做上一步" disabled={locked || !room.canRedo || pending} onClick={() => setSheet('redo')}><Redo2 size={18} /><span>重做</span></button></div></div>

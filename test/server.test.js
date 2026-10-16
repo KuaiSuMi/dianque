@@ -33,6 +33,7 @@ async function administrator(mf) {
   const db = mf.app;
   await db.one('UPDATE users SET id=? WHERE id=?', adminId, user.body.user.id);
   await db.one('UPDATE sessions SET user_id=? WHERE user_id=?', adminId, user.body.user.id);
+  await db.one('UPDATE user_activity SET user_id=? WHERE user_id=?', adminId, user.body.user.id);
   return { cookie: user.cookie, db };
 }
 async function socket(mf, code, cookie) {
@@ -130,13 +131,42 @@ test('整场战绩删除：在局账号保护、全员统计清除、旧场与�
   } finally { await mf.close(); }
 });
 
+test('数据概览：管理员权限、访问统计、账号信息、健康检查排除和重启持久化', async () => {
+  const path = await mkdtemp(join(tmpdir(), 'dianque-stats-'));
+  let mf = await runtime(path);
+  try {
+    const { cookie } = await administrator(mf), member = await register(mf, '统计读者');
+    assert.equal((await request(mf, '/admin/stats')).status, 401);
+    assert.equal((await request(mf, '/admin/stats', { cookie: member.cookie })).status, 403);
+    for (const days of ['0', '2', '31', 'bad']) assert.equal((await request(mf, `/admin/stats?days=${days}`, { cookie })).status, 400);
+    const visit = await request(mf, '/session');
+    assert.match(visit.cookie, /^dq_visitor=/);
+    await request(mf, '/session', { cookie: visit.cookie });
+    const before = mf.app.one('SELECT SUM(requests) AS n FROM site_traffic').n;
+    await request(mf, '/health');
+    assert.equal(mf.app.one('SELECT SUM(requests) AS n FROM site_traffic').n, before);
+    const result = await request(mf, '/admin/stats?days=7', { cookie });
+    assert.equal(result.status, 200); assert.equal(result.body.period.views, 2); assert.equal(result.body.period.visitors, 1);
+    assert.equal(result.body.period.activeUsers, 2); assert.equal(result.body.totals.users, 2); assert.equal(result.body.totals.admins, 1);
+    assert.equal(result.body.daily.length, 7); assert.equal(result.headers.get('Cache-Control'), 'no-store');
+    const users = (await request(mf, '/admin/users', { cookie })).body.users;
+    assert.ok(users.every((u) => u.lastSeen && u.games === 0 && u.createdAt));
+    assert.ok(users.every((u) => !('password_hash' in u) && !('salt' in u)));
+    await mf.close(); mf = await runtime(path);
+    const saved = (await request(mf, '/admin/stats?days=30', { cookie })).body;
+    assert.equal(saved.period.views, 2); assert.equal(saved.period.visitors, 1); assert.equal(saved.daily.length, 30);
+    assert.equal((await request(mf, `/admin/users/${member.body.user.id}`, { cookie, method: 'DELETE' })).status, 200);
+    assert.equal(mf.app.one('SELECT COUNT(*) AS n FROM user_activity WHERE user_id=?', member.body.user.id).n, 0);
+  } finally { await mf.close(); await rm(path, { recursive: true, force: true }); }
+});
+
 test('公告：管理员发布和编辑、纯文本、并发版本检查、撤下和重启持久化', async () => {
   const path = await mkdtemp(join(tmpdir(), 'dianque-notice-'));
   let mf = await runtime(path);
   try {
     const { cookie } = await administrator(mf);
     const member = await register(mf, '公告读者');
-    const body = { title: '测试公告', content: '<script>alert(1)</script>\n第二行', published: false };
+    const body = { title: '测试公告', content: '<script>alert(1)</script>\n第二行', published: false, popup: true };
     assert.equal((await request(mf, '/admin/announcements', { body, cookie: member.cookie })).status, 403);
     assert.equal((await request(mf, '/admin/announcements', { body: { ...body, title: ' ' }, cookie })).status, 400);
     const created = await request(mf, '/admin/announcements', { body, cookie }); assert.equal(created.status, 201);
@@ -147,9 +177,37 @@ test('公告：管理员发布和编辑、纯文本、并发版本检查、撤�
     await mf.close(); mf = await runtime(path);
     const published = (await request(mf, '/announcements')).body;
     assert.equal(published.length, 1); assert.equal(published[0].content, body.content); assert.equal(published[0].revision, 2);
+    assert.equal(published[0].popup, 1);
     assert.equal((await request(mf, route, { cookie, body: { ...body, revision: 2 } })).status, 200);
     assert.deepEqual((await request(mf, '/announcements')).body, []);
   } finally { await mf.close(); await rm(path, { recursive: true, force: true }); }
+});
+
+test('公告允许空正文，弹窗独立设置、严格校验并原子保存', async () => {
+  const mf = await runtime();
+  try {
+    const { cookie } = await administrator(mf);
+    const body = { title: '仅标题公告', content: '', published: true, popup: false };
+    for (const content of [null, 1, 'a'.repeat(3001)]) assert.equal((await request(mf, '/admin/announcements', { cookie, body: { ...body, content } })).status, 400);
+    for (const popup of [undefined, null, 0, 'false']) assert.equal((await request(mf, '/admin/announcements', { cookie, body: { ...body, popup } })).status, 400);
+    const created = await request(mf, '/admin/announcements', { cookie, body });
+    assert.equal(created.status, 201); assert.equal(created.body.content, ''); assert.equal(created.body.popup, 0);
+    const route = `/admin/announcements/${created.body.id}`;
+    assert.equal((await request(mf, '/announcements')).body[0].popup, 0);
+    assert.equal((await request(mf, '/admin/announcements', { cookie })).body[0].popup, 0);
+    mf.app.rows("CREATE TRIGGER prevent_popup_save BEFORE INSERT ON announcement_popups BEGIN SELECT RAISE(ABORT, 'test popup failure'); END");
+    assert.equal((await request(mf, route, { cookie, body: { ...body, title: '不应保存', popup: true, revision: 1 } })).status, 500);
+    const unchanged = (await request(mf, '/announcements')).body[0];
+    assert.equal(unchanged.title, body.title); assert.equal(unchanged.revision, 1); assert.equal(unchanged.popup, 0);
+    mf.app.rows('DROP TRIGGER prevent_popup_save');
+    const enabled = await request(mf, route, { cookie, body: { ...body, content: '  \n  ', popup: true, revision: 1 } });
+    assert.equal(enabled.status, 200); assert.equal(enabled.body.content, ''); assert.equal(enabled.body.popup, 1);
+    assert.equal((await request(mf, '/announcements')).body[0].popup, 1);
+    const disabled = await request(mf, route, { cookie, body: { ...body, revision: 2 } });
+    assert.equal(disabled.status, 200); assert.equal(disabled.body.popup, 0);
+    assert.equal((await request(mf, '/announcements')).body[0].popup, 0);
+    assert.equal(mf.app.one('SELECT COUNT(*) AS n FROM announcement_popups').n, 0);
+  } finally { await mf.close(); }
 });
 
 test('公告删除：管理员权限、跨站拒绝、版本检查、草稿和已发布公告清除及重启持久化', async () => {
@@ -157,7 +215,7 @@ test('公告删除：管理员权限、跨站拒绝、版本检查、草稿和�
   let mf = await runtime(path);
   try {
     const { cookie } = await administrator(mf), member = await register(mf, '公告管理者');
-    const body = { title: '待删除公告', content: '删除后不再展示', published: true };
+    const body = { title: '待删除公告', content: '删除后不再展示', published: true, popup: true };
     const created = await request(mf, '/admin/announcements', { cookie, body });
     const route = `/admin/announcements/${created.body.id}`;
     const remove = { method: 'DELETE', cookie };
@@ -171,11 +229,13 @@ test('公告删除：管理员权限、跨站拒绝、版本检查、草稿和�
     mf.app.rows("CREATE TRIGGER prevent_notice_delete BEFORE DELETE ON announcements BEGIN SELECT RAISE(ABORT, 'test delete failure'); END");
     assert.equal((await request(mf, `${route}?revision=2`, remove)).status, 500);
     assert.equal((await request(mf, '/announcements')).body.length, 1);
+    assert.equal((await request(mf, '/announcements')).body[0].popup, 1);
     mf.app.rows('DROP TRIGGER prevent_notice_delete');
     assert.equal((await request(mf, `/admin/users/${member.body.user.id}/role`, { cookie, body: { isAdmin: true } })).status, 200);
     assert.equal((await request(mf, `${route}?revision=2`, { ...remove, cookie: member.cookie })).status, 200);
     assert.deepEqual((await request(mf, '/announcements')).body, []);
     assert.deepEqual((await request(mf, '/admin/announcements', { cookie })).body, []);
+    assert.equal(mf.app.one('SELECT COUNT(*) AS n FROM announcement_popups').n, 0);
     assert.equal((await request(mf, `${route}?revision=2`, remove)).status, 404);
     assert.equal((await request(mf, route, { cookie, body: { ...body, revision: 2 } })).status, 404);
     const draft = await request(mf, '/admin/announcements', { cookie, body: { ...body, published: false } });
@@ -439,7 +499,7 @@ test('管理员：服务端权限、字段白名单、用户查询分页与输�
     assert.equal((await request(mf, '/admin/users?offset=-1', { cookie })).status, 400);
     const result = await request(mf, '/admin/users?q=%EF%BC%B4%EF%BC%A5%EF%BC%B3%EF%BC%B4%EF%BC%A1%EF%BC%A4%EF%BC%AD%EF%BC%A9%EF%BC%AE', { cookie });
     assert.equal(result.body.total, 1);
-    assert.deepEqual(Object.keys(result.body.users[0]).sort(), ['createdAt', 'id', 'isAdmin', 'isSuperAdmin', 'nickname']);
+    assert.deepEqual(Object.keys(result.body.users[0]).sort(), ['createdAt', 'games', 'id', 'isAdmin', 'isSuperAdmin', 'lastSeen', 'nickname']);
     assert.equal(result.body.users[0].isAdmin, true);
     for (let i = 0; i < 21; i++) await db.one('INSERT INTO users(id,nickname_key,nickname,salt,password_hash,created_at) SELECT ?,?,?,salt,password_hash,? FROM users WHERE id=?', randomUUID(), `seed${i}`, `seed${i}`, new Date().toISOString(), adminId);
     const first = (await request(mf, '/admin/users', { cookie })).body;

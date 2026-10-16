@@ -19,6 +19,10 @@ export async function createApp({ database = resolve(root, 'data/dianque.sqlite'
   http.disable('x-powered-by');
   // 生产服务仅绑定回环地址，转发头只信任同机反向代理。
   http.set('trust proxy', 'loopback');
+  http.use((req, res, next) => {
+    if (req.path !== '/api/health') res.once('finish', () => app.stats.request());
+    next();
+  });
   http.use((_req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');

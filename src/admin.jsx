@@ -3,6 +3,7 @@ import { ArrowLeft, ChevronRight, LoaderCircle, Search, ShieldCheck } from 'luci
 import { api } from './api';
 import { Expanding, PanelTransition, Segmented, Toggle } from './ui';
 import { AdminVoices } from './admin-voices';
+import { AdminStats } from './admin-stats';
 
 export function AdminEntry({ open }) {
   return open && <div className="admin-entry"><button className="text-button" onClick={open}><ShieldCheck size={17} />管理中心</button></div>;
@@ -64,6 +65,7 @@ function UserEditor({ target, user, back, saved }) {
     mutate(creating ? '/admin/users' : `/admin/users/${target.id}`, { method: 'POST', body: { ...(creating || nickname !== target.nickname ? { nickname } : {}), ...(password ? { password } : {}) } });
   }
   return <><div className="account-heading"><button className="text-button" disabled={busy} onClick={back}><ArrowLeft size={17} />用户列表</button><strong>{creating ? '创建账号' : target.nickname}</strong></div>
+    {!creating && <dl className="admin-user-facts"><div><dt>注册时间</dt><dd>{new Date(target.createdAt).toLocaleString('zh-CN')}</dd></div><div><dt>最近访问</dt><dd>{target.lastSeen ? new Date(target.lastSeen).toLocaleString('zh-CN') : '暂无记录'}</dd></div><div><dt>已结算对局</dt><dd>{target.games} 场</dd></div></dl>}
     {canEdit && <form onSubmit={submit} aria-label={creating ? '创建账号' : '编辑账号'}><fieldset className="admin-fields" disabled={busy}>
       <label>昵称<input autoComplete="off" maxLength={12} required value={nickname} onChange={(e) => setNickname(e.target.value)} /></label>
       {!creating && <p className="field-help">修改后使用新昵称登录，账号和战绩保留。</p>}
@@ -130,11 +132,11 @@ function Announcements() {
     if (busy) return;
     setBusy(true); setError('');
     try {
-      const { id, title, content, published, revision } = editing;
+      const { id, title, content, published, popup, revision } = editing;
       if (deleting) {
         await api(`/admin/announcements/${id}?revision=${revision}`, { method: 'DELETE' });
         setItems((items) => items.filter((item) => item.id !== id));
-      } else await api(`/admin/announcements${id ? `/${id}` : ''}`, { method: 'POST', body: { title, content, published: !!published, ...(id ? { revision } : {}) } });
+      } else await api(`/admin/announcements${id ? `/${id}` : ''}`, { method: 'POST', body: { title, content, published: !!published, popup: !!popup, ...(id ? { revision } : {}) } });
       setNotice(deleting ? '公告已删除' : '公告已保存');
       setEditing(null); setDeleting(false); setRevision((n) => n + 1);
     } catch (e) { setError(e.message); }
@@ -144,12 +146,13 @@ function Announcements() {
     <button className="text-button" disabled={busy} onClick={() => edit(null)}><ArrowLeft size={17} />公告列表</button>
     {deleting ? <div className="admin-section admin-confirm"><p>确定删除公告「{editing.title}」？删除后将从首页和管理中心移除，无法撤销。</p><div className="panel-actions"><button className="button" disabled={busy} onClick={() => setDeleting(false)}>保留公告</button><button className="button danger" disabled={busy} onClick={submit}>{busy && <LoaderCircle size={18} className="spin" />}确认删除公告</button></div></div> : <form className="admin-section" onSubmit={submit}><fieldset className="admin-fields" disabled={busy}>
       <label>标题<input maxLength={80} required value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} /></label>
-      <label>正文<textarea maxLength={3000} rows={8} required value={editing.content} onChange={(e) => setEditing({ ...editing, content: e.target.value })} /></label>
-      <div className="settings-row"><span>在首页发布<small>关闭后仅管理员可见</small></span><Toggle label="在首页发布" checked={!!editing.published} disabled={busy} onChange={(published) => setEditing({ ...editing, published })} /></div>
+      <label>正文（选填）<textarea maxLength={3000} rows={8} value={editing.content} onChange={(e) => setEditing({ ...editing, content: e.target.value })} /></label>
+      <div className="settings-row"><span>发布公告<small>关闭后仅管理员可见</small></span><Toggle label="发布公告" checked={!!editing.published} disabled={busy} onChange={(published) => setEditing({ ...editing, published })} /></div>
+      <div className="settings-row"><span>自动弹窗<small>发布后在所有页面弹出，每个浏览器仅一次</small></span><Toggle label="自动弹窗" checked={!!editing.popup} disabled={busy} onChange={(popup) => setEditing({ ...editing, popup })} /></div>
       <button className="button primary full" disabled={busy}>{editing.published ? '保存并发布' : '保存草稿'}</button>
       {editing.id && <button type="button" className="text-button danger-text admin-delete" onClick={() => setDeleting(true)}>删除公告</button>}
     </fieldset></form>}
-  </> : <><div className="account-heading"><strong>公告</strong><button className="text-button" onClick={() => edit({ title: '', content: '', published: true })}>新建公告</button></div>
+  </> : <><div className="account-heading"><strong>公告</strong><button className="text-button" onClick={() => edit({ title: '', content: '', published: true, popup: true })}>新建公告</button></div>
     <div className="session-list">{items?.map((item) => <button key={item.id} onClick={() => edit(item)}><span><b>{item.title}</b><small>{item.published ? '已发布' : '草稿'} · {new Date(item.updated_at).toLocaleString('zh-CN')}</small></span><ChevronRight size={20} /></button>)}</div>
     {items?.length === 0 && <p className="empty">暂无公告</p>}{!items && !error && <p role="status">正在读取公告…</p>}
     {error && <button className="text-button" onClick={() => { setError(''); setRevision((n) => n + 1); }}>重试</button>}
@@ -157,6 +160,6 @@ function Announcements() {
 }
 
 export function AdminUsers({ user, onSaved }) {
-  const [tab, setTab] = useState('users');
-  return <Expanding initial={false}><Segmented className="admin-tabs" label="管理内容" value={tab} onChange={setTab} options={[["users", "账号与战绩"], ["announcements", "公告"], ["voices", "立直音频"]]} /><PanelTransition view={tab}>{tab === 'users' ? <Users user={user} onSaved={onSaved} /> : tab === 'announcements' ? <Announcements /> : <AdminVoices />}</PanelTransition></Expanding>;
+  const [tab, setTab] = useState('stats');
+  return <Expanding initial={false}><Segmented className="admin-tabs" label="管理内容" value={tab} onChange={setTab} options={[["stats", "概览"], ["users", "账号"], ["announcements", "公告"], ["voices", "音频"]]} /><PanelTransition view={tab}>{tab === 'stats' ? <AdminStats /> : tab === 'users' ? <Users user={user} onSaved={onSaved} /> : tab === 'announcements' ? <Announcements /> : <AdminVoices />}</PanelTransition></Expanding>;
 }
